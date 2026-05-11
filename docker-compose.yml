@@ -3,6 +3,7 @@ services:
     build: .
     container_name: aistudio-api
     restart: unless-stopped
+    shm_size: "1gb"
     ports:
       - "8080:8080"    # API server
       # - "9222:9222"  # Optional: expose only when debugging Camoufox
@@ -14,9 +15,12 @@ services:
       - AISTUDIO_CAMOUFOX_PORT=9222
       - AISTUDIO_CAMOUFOX_HEADLESS=1
       - AISTUDIO_ACCOUNTS_DIR=/app/data/accounts
+      - AISTUDIO_API_KEYS_FILE=/app/data/api_keys.json
+      - AISTUDIO_ADMIN_PASSWORD=${AISTUDIO_ADMIN_PASSWORD:?set AISTUDIO_ADMIN_PASSWORD in .env}
+      - AISTUDIO_ADMIN_SESSION_SECRET=${AISTUDIO_ADMIN_SESSION_SECRET:-}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
-      start_period: 10s
+      start_period: 30s
       retries: 3
