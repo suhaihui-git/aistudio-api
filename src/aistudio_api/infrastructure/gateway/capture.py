@@ -48,7 +48,7 @@ class RequestCaptureService:
         # Image bytes live in rewritten contents, so template capture does not need
         # the original image list. Only cache plain-text prompts.
         if not images and not force_refresh:
-            cached = self._snapshot_cache.get(prompt)
+            cached = self._snapshot_cache.get(prompt, model=model)
             if cached:
                 _snapshot, url, headers, body = cached
                 return CapturedRequest(url=url, headers=headers, body=body)
@@ -60,14 +60,14 @@ class RequestCaptureService:
         snapshot = await self._session.generate_snapshot(snapshot_contents)
         body = modify_body(
             template.body,
-            model=template.model or model,
+            model=model,
             prompt=prompt,
             contents=rewritten_contents,
             snapshot=snapshot,
         )
         captured = CapturedRequest(url=template.url, headers=template.headers, body=body)
         if not images:
-            self._snapshot_cache.put(prompt, captured.snapshot, captured.url, captured.headers, captured.body)
+            self._snapshot_cache.put(prompt, captured.snapshot, captured.url, captured.headers, captured.body, model=model)
         logger.info(
             "Hook 拦截成功: model=%s, snapshot=%s chars, body=%s chars",
             captured.model,

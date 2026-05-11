@@ -20,11 +20,12 @@ class SnapshotCache:
         self.max_size = max_size or settings.snapshot_cache_max
 
     @staticmethod
-    def _hash(prompt: str) -> str:
-        return hashlib.sha256(prompt.encode()).hexdigest()
+    def _hash(prompt: str, model: str | None = None) -> str:
+        raw_key = f"{model or ''}\n{prompt}"
+        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
-    def get(self, prompt: str) -> Optional[tuple]:
-        key = self._hash(prompt)
+    def get(self, prompt: str, model: str | None = None) -> Optional[tuple]:
+        key = self._hash(prompt, model)
         if key not in self._cache:
             return None
 
@@ -40,8 +41,8 @@ class SnapshotCache:
         logger.info("Snapshot 缓存命中: %s... (%ss ago)", key[:8], int(age))
         return snapshot, url, headers, body
 
-    def put(self, prompt: str, snapshot: str, url: str, headers: dict, body: str):
-        key = self._hash(prompt)
+    def put(self, prompt: str, snapshot: str, url: str, headers: dict, body: str, model: str | None = None):
+        key = self._hash(prompt, model)
         # Evict oldest if at capacity
         while len(self._cache) >= self.max_size:
             evicted_key, _ = self._cache.popitem(last=False)
