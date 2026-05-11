@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
+import stat
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("aistudio.account_store")
 
 # 默认搜索路径（与 config.py 保持一致）
 _SEARCH_ROOTS: list[Path] = [
@@ -229,7 +234,11 @@ class AccountStore:
         # 删除目录
         account_dir = self._accounts_dir / account_id
         if account_dir.is_dir():
-            shutil.rmtree(account_dir)
+            try:
+                self._remove_account_dir(account_dir)
+            except OSError as exc:
+                self._scrub_account_dir(account_dir)
+                logger.warning("账号目录删除失败，已清空认证文件: %s", exc)
         # 从注册表移除
         del registry.accounts[account_id]
         if registry.active_account_id == account_id:
@@ -237,12 +246,52 @@ class AccountStore:
         self._save_registry(registry)
         return True
 
-    def update_account(self, account_id: str, name: str) -> AccountMeta | None:
-        """更新账号名称。"""
+    def _remove_account_dir(self, account_dir: Path) -> None:
+        """删除账号目录，兼容 Windows 文件属性和短暂占用。"""
+
+        def _on_remove_error(func, path, exc_info):
+            try:
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+            except Exception:
+                raise exc_info[1]
+
+        last_error: Exception | None = None
+        for _ in range(3):
+            try:
+                shutil.rmtree(account_dir, onerror=_on_remove_error)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.2)
+        if last_error is not None:
+            raise last_error
+
+    def _scrub_account_dir(self, account_dir: Path) -> None:
+        """删除目录失败时清空敏感认证内容。"""
+        auth_path = account_dir / "auth.json"
+        if auth_path.exists():
+            auth_path.write_text(
+                json.dumps({"cookies": [], "origins": []}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        meta_path = account_dir / "meta.json"
+        if meta_path.exists():
+            meta_path.write_text(
+                json.dumps({"id": account_dir.name, "deleted": True}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+    def update_account(self, account_id: str, name: str | None = None, email: str | None = None) -> AccountMeta | None:
+        """更新账号资料。"""
         registry = self._load_registry()
         if account_id not in registry.accounts:
             return None
-        registry.accounts[account_id].name = name
+        if name is not None:
+            registry.accounts[account_id].name = name
+        if email is not None:
+            registry.accounts[account_id].email = email or None
         # 同步更新 meta.json
         account_dir = self._accounts_dir / account_id
         meta_path = account_dir / "meta.json"

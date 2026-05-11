@@ -13,8 +13,13 @@ from __future__ import annotations
 import argparse
 import base64
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
+
+SRC_ROOT = Path(__file__).resolve().parents[3]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 import orjson
 from camoufox.server import LAUNCH_SCRIPT, get_nodejs, to_camel_case_dict

@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 
 from .routes_accounts import router as accounts_router
+from .routes_auth import router as auth_router
 from .routes_gemini import router as gemini_router
 from .routes_openai import router as openai_router
 from .routes_system import router as system_router
@@ -60,6 +61,13 @@ async def lifespan(app: FastAPI):
     )
     runtime_state.rotator = rotator
 
+    if client._session is not None:
+        await account_service.ensure_active_loaded(
+            client._session,
+            runtime_state.snapshot_cache,
+            keep_snapshot_cache=True,
+        )
+
     logger.info(
         "Client initialized (camoufox port=%s, rotation=%s, accounts=%d)",
         runtime_state.camoufox_port,
@@ -88,6 +96,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Studio API", lifespan=lifespan)
+app.include_router(auth_router)
 app.include_router(system_router)
 app.include_router(gemini_router)
 app.include_router(openai_router)

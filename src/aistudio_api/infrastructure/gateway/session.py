@@ -135,6 +135,10 @@ class BrowserSession:
         self._botguard_lock = asyncio.Lock()
         self._snapshot_lock = asyncio.Lock()
 
+    @property
+    def auth_file(self) -> str | None:
+        return self._auth_file
+
     async def ensure_context(self):
         return await self._run_sync(self._ensure_browser_sync)
 
@@ -395,6 +399,9 @@ class BrowserSession:
         return page, url, headers
 
     def _switch_auth_sync(self, auth_file: str | None) -> None:
+        auth_file = str(Path(auth_file).resolve()) if auth_file else None
+        if self._auth_file == auth_file:
+            return
         self._auth_file = auth_file
         self._templates.clear()
         self._close_sync()
@@ -838,7 +845,30 @@ mw:((hash) => {
             if isinstance(result, str) and result.startswith("hooked:"):
                 self._snap_key = result.split(":", 1)[1]
                 return
+        if result == "no_default_MakerSuite":
+            raise RuntimeError(self._build_hook_page_error_sync(page, result))
         raise RuntimeError(f"Hook install failed: {result}")
+
+    def _build_hook_page_error_sync(self, page, result: str) -> str:
+        try:
+            url = page.url or ""
+            title = page.title()
+            body = page.evaluate("() => document.body?.innerText?.slice(0, 200) || ''")
+        except Exception:
+            return f"Hook install failed: {result}"
+
+        if "accounts.google.com" in url or "Sign in" in title:
+            return (
+                "AI Studio 账号未登录或 Cookie 已失效：当前页面跳转到了 Google 登录页。"
+                "请重新登录账号，或导入完整的 Google 登录 Cookie。"
+                f" url={url}, title={title}"
+            )
+
+        has_textarea = page.query_selector("textarea") is not None
+        return (
+            f"Hook install failed: {result}; "
+            f"url={url}, title={title}, has_textarea={has_textarea}, body={body!r}"
+        )
 
     def _click_run_button_sync(self, page) -> bool:
         try:

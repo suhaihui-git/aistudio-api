@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from aistudio_api.api.dependencies import get_account_service, get_runtime_state
+from aistudio_api.api.dependencies import get_account_service, get_runtime_state, require_admin
 from aistudio_api.infrastructure.account.cookie_parser import parse_cookie_string
 
-router = APIRouter(prefix="/accounts")
+router = APIRouter(prefix="/accounts", dependencies=[Depends(require_admin)])
 
 
 class LoginStartRequest(BaseModel):
@@ -36,7 +39,8 @@ class LoginStatusResponse(BaseModel):
 
 
 class UpdateAccountRequest(BaseModel):
-    name: str
+    name: str | None = None
+    email: str | None = None
 
 
 class ImportCookiesRequest(BaseModel):
@@ -51,6 +55,24 @@ class ImportCookiesResponse(BaseModel):
     name: str
     cookie_count: int
     domain_summary: dict[str, int]  # domain -> cookie 数量
+
+
+class ImportAccountRequest(BaseModel):
+    package: dict
+    preserve_id: bool = False
+    name: str | None = None
+    email: str | None = None
+
+
+class ImportAccountResponse(BaseModel):
+    account_id: str
+    name: str
+    email: str | None = None
+    cookie_count: int
+
+
+def _safe_filename_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "account"
 
 
 @router.post("/login/start", response_model=LoginStartResponse)
@@ -145,16 +167,51 @@ async def activate_account(
     )
 
 
+@router.get("/{account_id}/export")
+async def export_account(
+    account_id: str,
+    account_service=Depends(get_account_service),
+):
+    """导出单个账号。"""
+    payload = account_service.export_account(account_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="账号不存在或 auth.json 缺失")
+
+    account = payload["account"]
+    filename_base = _safe_filename_part(account.get("email") or account.get("name") or account_id)
+    headers = {"Content-Disposition": f'attachment; filename="aistudio-account-{filename_base}.json"'}
+    return JSONResponse(payload, headers=headers)
+
+
 @router.delete("/{account_id}")
 async def delete_account(
     account_id: str,
     account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
 ):
     """删除账号。"""
-    success = account_service.delete_account(account_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    return {"ok": True}
+    async def _delete():
+        active = account_service.get_active_account()
+        success = account_service.delete_account(account_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="账号不存在")
+
+        rotator = runtime_state.rotator
+        if rotator:
+            rotator.remove_account(account_id)
+
+        client = runtime_state.client
+        if active and active.id == account_id and client and client._session:
+            await client._session.switch_auth(None)
+            if runtime_state.snapshot_cache is not None:
+                runtime_state.snapshot_cache.clear()
+        return {"ok": True}
+
+    busy_lock = runtime_state.busy_lock
+    if busy_lock is None:
+        return await _delete()
+    async with busy_lock:
+        return await _delete()
 
 
 @router.put("/{account_id}", response_model=AccountResponse)
@@ -163,8 +220,14 @@ async def update_account(
     req: UpdateAccountRequest,
     account_service=Depends(get_account_service),
 ):
-    """更新账号名称。"""
-    account = account_service.update_account(account_id, req.name)
+    """更新账号资料。"""
+    if req.name is None and req.email is None:
+        raise HTTPException(status_code=400, detail="至少需要提供 name 或 email")
+    name = req.name.strip() if req.name is not None else None
+    email = req.email.strip() if req.email is not None else None
+    if name == "":
+        raise HTTPException(status_code=400, detail="账号名称不能为空")
+    account = account_service.update_account(account_id, name=name, email=email)
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
     return AccountResponse(
@@ -212,4 +275,38 @@ async def import_cookies(
         name=account.name,
         cookie_count=cookie_count,
         domain_summary=domain_summary,
+    )
+
+
+@router.post("/import-account", response_model=ImportAccountResponse)
+async def import_account(
+    req: ImportAccountRequest,
+    account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
+):
+    """导入单个账号导出包。"""
+    try:
+        account = account_service.import_account_package(
+            req.package,
+            preserve_id=req.preserve_id,
+            name=req.name,
+            email=req.email,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    rotator = runtime_state.rotator
+    if rotator:
+        rotator.add_account(account.id)
+
+    if isinstance(req.package.get("storage_state"), dict):
+        storage_state = req.package["storage_state"]
+    else:
+        storage_state = req.package if isinstance(req.package, dict) else {}
+    cookies = storage_state.get("cookies", []) if isinstance(storage_state, dict) else []
+    return ImportAccountResponse(
+        account_id=account.id,
+        name=account.name,
+        email=account.email,
+        cookie_count=len(cookies) if isinstance(cookies, list) else 0,
     )

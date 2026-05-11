@@ -82,6 +82,13 @@ class Settings:
     dump_raw_response: bool = os.getenv("AISTUDIO_DUMP_RAW_RESPONSE", "0") in ("1", "true", "True")
     dump_raw_response_dir: str = os.getenv("AISTUDIO_DUMP_RAW_RESPONSE_DIR", "/tmp")
     accounts_dir: str = os.getenv("AISTUDIO_ACCOUNTS_DIR", "")
+    admin_password: str | None = os.getenv("AISTUDIO_ADMIN_PASSWORD")
+    admin_session_secret: str | None = os.getenv("AISTUDIO_ADMIN_SESSION_SECRET")
+    admin_session_ttl_seconds: int = int(os.getenv("AISTUDIO_ADMIN_SESSION_TTL", "86400"))
+    api_keys_file: str = os.getenv(
+        "AISTUDIO_API_KEYS_FILE",
+        str(Path(__file__).resolve().parents[2] / "data" / "api_keys.json"),
+    )
     login_camoufox_port: int = int(os.getenv("AISTUDIO_LOGIN_CAMOUFOX_PORT", "9223"))
     # 账号轮询配置
     account_rotation_mode: str = os.getenv("AISTUDIO_ACCOUNT_ROTATION_MODE", "round_robin")  # round_robin, lru, least_rl

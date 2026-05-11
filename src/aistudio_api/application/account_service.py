@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -33,6 +34,40 @@ class AccountService:
     def get_active_account(self) -> AccountMeta | None:
         """获取当前活跃账号。"""
         return self._store.get_active_account()
+
+    def get_active_auth_path(self) -> str | None:
+        """获取当前活跃账号的 auth.json 路径。"""
+        path = self._store.get_active_auth_path()
+        return str(path) if path is not None else None
+
+    async def ensure_active_loaded(
+        self,
+        browser_session: Any,
+        snapshot_cache: Any = None,
+        *,
+        keep_snapshot_cache: bool = True,
+    ) -> AccountMeta | None:
+        """确保当前活跃账号已经加载到 BrowserSession。"""
+        account = self._store.get_active_account()
+        if account is None:
+            return None
+
+        auth_path = self._store.get_auth_path(account.id)
+        if auth_path is None:
+            logger.error("活跃账号 %s 的 auth.json 不存在", account.id)
+            return None
+
+        target_auth = str(auth_path.resolve())
+        current_auth = getattr(browser_session, "auth_file", None)
+        if current_auth == target_auth:
+            return account
+
+        await browser_session.switch_auth(target_auth)
+        if not keep_snapshot_cache and snapshot_cache is not None:
+            snapshot_cache.clear()
+            logger.info("已清除 snapshot 缓存")
+        logger.info("已加载活跃账号: %s (%s)", account.id, account.name)
+        return account
 
     async def start_login(self, name: str | None = None) -> str:
         """启动登录流程，返回 session_id。"""
@@ -99,6 +134,90 @@ class AccountService:
         """删除账号。"""
         return self._store.delete_account(account_id)
 
-    def update_account(self, account_id: str, name: str) -> AccountMeta | None:
-        """更新账号名称。"""
-        return self._store.update_account(account_id, name)
+    def update_account(self, account_id: str, name: str | None = None, email: str | None = None) -> AccountMeta | None:
+        """更新账号资料。"""
+        return self._store.update_account(account_id, name=name, email=email)
+
+    def export_account(self, account_id: str) -> dict[str, Any] | None:
+        """导出单个账号及其 storage state。"""
+        account = self._store.get_account(account_id)
+        auth_path = self._store.get_auth_path(account_id)
+        if account is None or auth_path is None:
+            return None
+
+        storage_state = json.loads(auth_path.read_text(encoding="utf-8"))
+        return {
+            "version": 1,
+            "type": "aistudio-api-account",
+            "account": account.to_dict(),
+            "storage_state": storage_state,
+        }
+
+    def import_account_package(
+        self,
+        payload: dict[str, Any],
+        *,
+        preserve_id: bool = False,
+        name: str | None = None,
+        email: str | None = None,
+    ) -> AccountMeta:
+        """导入由 export_account 生成的单账号包。"""
+        if not isinstance(payload, dict):
+            raise ValueError("账号包格式不正确")
+
+        if isinstance(payload.get("storage_state"), dict):
+            storage_state = payload["storage_state"]
+        elif isinstance(payload.get("cookies"), list):
+            storage_state = {
+                "cookies": payload["cookies"],
+                "origins": payload.get("origins") if isinstance(payload.get("origins"), list) else [],
+            }
+        else:
+            raise ValueError("账号包缺少 storage_state 或 cookies")
+
+        account_data = payload.get("account") if isinstance(payload.get("account"), dict) else {}
+        if not isinstance(storage_state.get("cookies"), list):
+            raise ValueError("账号包 storage_state.cookies 格式不正确")
+
+        storage_state = self._normalize_storage_state(storage_state)
+        account_id = account_data.get("id") if preserve_id else None
+        account_name = name or account_data.get("name") or "导入的账号"
+        account_email = email if email is not None else account_data.get("email")
+        return self._store.save_account(
+            name=account_name,
+            email=account_email,
+            storage_state=storage_state,
+            account_id=account_id,
+        )
+
+    def _normalize_storage_state(self, storage_state: dict[str, Any]) -> dict[str, Any]:
+        """规范化浏览器扩展导出的 storage_state。"""
+        cookies: list[dict[str, Any]] = []
+        same_site_map = {
+            "none": "None",
+            "no_restriction": "None",
+            "unspecified": "None",
+            "lax": "Lax",
+            "strict": "Strict",
+        }
+
+        for cookie in storage_state.get("cookies", []):
+            if not isinstance(cookie, dict):
+                continue
+            if not all(cookie.get(key) for key in ("name", "value", "domain")):
+                continue
+
+            normalized = dict(cookie)
+            same_site = str(normalized.get("sameSite") or "None").lower()
+            normalized["sameSite"] = same_site_map.get(same_site, "None")
+            normalized["path"] = normalized.get("path") or "/"
+            normalized["secure"] = bool(normalized.get("secure", True))
+            normalized["httpOnly"] = bool(normalized.get("httpOnly", False))
+            normalized["expires"] = normalized.get("expires", -1)
+            cookies.append(normalized)
+
+        if not cookies:
+            raise ValueError("账号包未包含有效 cookies")
+
+        origins = storage_state.get("origins") if isinstance(storage_state.get("origins"), list) else []
+        return {"cookies": cookies, "origins": origins}

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from aistudio_api.application.api_service import handle_chat, handle_image_generation
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 
-from .dependencies import get_client
+from .dependencies import get_client, require_api_key
 from .schemas import ChatRequest, ImageRequest
 
 router = APIRouter()
@@ -60,12 +60,12 @@ MODEL_IDS = {m["id"] for m in MODELS}
 
 
 @router.get("/v1/models")
-async def list_models():
+async def list_models(auth=Depends(require_api_key)):
     return {"object": "list", "data": MODELS}
 
 
 @router.get("/v1/models/{model_id:path}")
-async def get_model(model_id: str):
+async def get_model(model_id: str, auth=Depends(require_api_key)):
     for m in MODELS:
         if m["id"] == model_id:
             return m
@@ -73,11 +73,19 @@ async def get_model(model_id: str):
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(req: ChatRequest, client: AIStudioClient = Depends(get_client)):
+async def chat_completions(
+    req: ChatRequest,
+    client: AIStudioClient = Depends(get_client),
+    auth=Depends(require_api_key),
+):
     return await handle_chat(req, client)
 
 
 @router.post("/v1/images/generations")
-async def image_generations(req: ImageRequest, client: AIStudioClient = Depends(get_client)):
+async def image_generations(
+    req: ImageRequest,
+    client: AIStudioClient = Depends(get_client),
+    auth=Depends(require_api_key),
+):
     return await handle_image_generation(req, client)
 

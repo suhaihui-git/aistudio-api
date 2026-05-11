@@ -58,6 +58,26 @@ async def _try_switch_account() -> bool:
     return result is not None
 
 
+async def _ensure_active_account_loaded() -> bool:
+    """确保 BrowserSession 使用当前活跃账号的 auth.json。"""
+    account_service = runtime_state.account_service
+    client = runtime_state.client
+    browser_session = client._session if client else None
+
+    if not all([account_service, browser_session]):
+        return False
+
+    account = await account_service.ensure_active_loaded(
+        browser_session,
+        runtime_state.snapshot_cache,
+        keep_snapshot_cache=True,
+    )
+    if account is not None:
+        return True
+
+    return await _try_switch_account()
+
+
 def health_response() -> dict:
     busy_lock = runtime_state.busy_lock
     return {"status": "ok", "busy": busy_lock.locked() if busy_lock else False}
@@ -89,11 +109,9 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
 
     for attempt in range(max_retries):
         async with busy_lock:
-            # 首次尝试时，仅在没有活跃账号时才轮询（避免每次请求都重建浏览器）
+            # 首次尝试时，确保活跃账号已经加载到浏览器会话。
             if attempt == 0:
-                account_svc = runtime_state.account_service
-                if account_svc and not account_svc.get_active_account():
-                    await _try_switch_account()
+                await _ensure_active_account_loaded()
             normalized = normalize_chat_request(req.messages, req.model)
             model = normalized["model"]
             tmp_files = list(normalized["cleanup_paths"])
@@ -219,9 +237,7 @@ async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
     for attempt in range(max_retries):
         async with busy_lock:
             if attempt == 0:
-                account_svc = runtime_state.account_service
-                if account_svc and not account_svc.get_active_account():
-                    await _try_switch_account()
+                await _ensure_active_account_loaded()
             try:
                 logger.info("Image: model=%s, prompt=%s..., attempt=%d", req.model, req.prompt[:50], attempt + 1)
                 output = await client.generate_image(prompt=req.prompt, model=req.model, size=req.size, google_search=req.google_search)
@@ -300,6 +316,7 @@ def _build_streaming_response(
 
         async with busy_lock:
             try:
+                await _ensure_active_account_loaded()
                 chat_id = new_chat_id()
                 final_usage = None
                 saw_tool_calls = False
@@ -389,9 +406,7 @@ async def handle_gemini_generate_content(
     for attempt in range(max_retries):
         async with busy_lock:
             if attempt == 0:
-                account_svc = runtime_state.account_service
-                if account_svc and not account_svc.get_active_account():
-                    await _try_switch_account()
+                await _ensure_active_account_loaded()
             normalized = None
             try:
                 normalized = normalize_gemini_request(req, model_path)
@@ -495,6 +510,7 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
 
         async with busy_lock:
             try:
+                await _ensure_active_account_loaded()
                 final_usage = None
                 for stream_attempt in range(2):
                     try:

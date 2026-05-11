@@ -9,6 +9,24 @@
 </head>
 
 <body x-data="app()" x-init="init()" @click="configOpen=false">
+  <div class="login-page" x-show="authChecked && !authed" x-cloak>
+    <div class="login-panel">
+      <div class="logo">AI</div>
+      <h1>管理员登录</h1>
+      <div class="modal-field">
+        <label>管理员密码</label>
+        <input class="modal-input" type="password" x-model="login.password" @keydown.enter="loginAdmin()"
+          placeholder="AISTUDIO_ADMIN_PASSWORD">
+      </div>
+      <div class="login-error" x-show="login.error" x-text="login.error"></div>
+      <button class="btn btn-primary btn-block" :disabled="login.busy" @click="loginAdmin()">
+        <span x-show="!login.busy">登录</span>
+        <span x-show="login.busy">登录中...</span>
+      </button>
+    </div>
+  </div>
+  <template x-if="authed">
+  <div class="app-shell">
   <div class="overlay" :class="{open:sidebarOpen}" @click="sidebarOpen=false"></div>
   <nav class="sidebar" :class="{open:sidebarOpen}">
     <div class="sidebar-header">
@@ -32,9 +50,15 @@
           <path d="M23 21v-2a4 4 0 00-3-3.87" />
           <path d="M16 3.13a4 4 0 010 7.75" />
         </svg> 账号管理 </button>
+      <button class="nav-item" :class="{active:view==='settings'}" @click="go('settings')">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4Z" />
+        </svg> 设置 </button>
     </div>
     <div class="sidebar-footer">
       <div class="dot"></div><span>系统在线</span>
+      <button class="btn btn-sm" style="margin-left:auto" @click="logoutAdmin()">退出</button>
     </div>
   </nav>
   <div class="main">
@@ -55,10 +79,19 @@
           </div>
         </template>
         <template x-if="view!=='chat'">
-          <span class="topbar-title" x-text="view==='dashboard'?'控制面板':'账号管理'"></span>
+          <span class="topbar-title"
+            x-text="view==='dashboard'?'控制面板':view==='accounts'?'账号管理':'设置'"></span>
         </template>
       </div>
       <div class="topbar-right" @click.stop>
+        <template x-if="view==='chat' && msgs.length > 0">
+          <button class="icon-btn" @click="clearMessages()" title="清空消息">
+            <svg viewBox="0 0 24 24">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+            </svg>
+          </button>
+        </template>
         <button class="icon-btn" :class="{active:configOpen}" @click="configOpen=!configOpen" title="Chat Settings">
           <svg viewBox="0 0 24 24">
             <path
@@ -182,6 +215,33 @@
               <div class="avatar" :class="m.role==='user'?'avatar-user':'avatar-ai'" x-text="m.role==='user'?'U':'AI'">
               </div>
               <div style="flex:1;min-width:0">
+                <template x-if="m.role==='user'">
+                  <div style="display:flex;justify-content:flex-end;margin-bottom:4px;gap:4px">
+                    <button class="icon-btn" style="width:28px;height:28px;padding:4px" @click="resendMessage(i)" :disabled="busy" title="重新发送">
+                      <svg viewBox="0 0 24 24" style="width:16px;height:16px">
+                        <polyline points="1 4 1 10 7 10" />
+                        <polyline points="23 20 23 14 17 14" />
+                        <path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" />
+                      </svg>
+                    </button>
+                    <button class="icon-btn" style="width:28px;height:28px;padding:4px" @click="deleteMessage(i)" title="删除消息">
+                      <svg viewBox="0 0 24 24" style="width:16px;height:16px">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                      </svg>
+                    </button>
+                  </div>
+                </template>
+                <template x-if="m.role!=='user'">
+                  <div style="display:flex;justify-content:flex-end;margin-bottom:4px">
+                    <button class="icon-btn" style="width:28px;height:28px;padding:4px" @click="deleteMessage(i)" title="删除消息">
+                      <svg viewBox="0 0 24 24" style="width:16px;height:16px">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                      </svg>
+                    </button>
+                  </div>
+                </template>
                 <template x-if="m.thinking">
                   <div class="think-block" @click="m.showThinking=!m.showThinking">
                     <div class="think-toggle"><span>思考中</span><span class="think-arrow"
@@ -306,6 +366,9 @@
             <h1 style="font-size:24px;font-weight:700">账号管理</h1>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <button class="btn" @click="cookieModal.open=true">导入 Cookies</button>
+              <input type="file" x-ref="accountImport" accept="application/json,.json" style="display:none"
+                @change="importAccountFile">
+              <button class="btn" @click="$refs.accountImport.click()">导入账号</button>
               <button class="btn btn-primary" @click="addAccount()">+ 登录账号</button>
             </div>
           </div>
@@ -363,12 +426,81 @@
                           x-text="a.rate_limited||0"></span></td>
                       <td><span class="badge badge-green" x-show="a.id===activeId">激活</span><span
                           class="badge badge-gray" x-show="a.id!==activeId">待命</span></td>
-                      <td><button class="btn btn-sm" x-show="a.id!==activeId"
-                          @click="activateAccount(a.id)">手动激活</button></td>
+                      <td>
+                        <div class="action-row">
+                          <button class="btn btn-sm" x-show="a.id!==activeId"
+                            @click="activateAccount(a.id)">手动激活</button>
+                          <button class="btn btn-sm" @click="editAccount(a)">编辑</button>
+                          <button class="btn btn-sm" @click="exportAccount(a.id)">导出</button>
+                          <button class="btn btn-sm btn-danger" @click="deleteAccount(a.id)">删除</button>
+                        </div>
+                      </td>
                     </tr>
                   </template>
                   <tr x-show="!accountRows.length">
                     <td colspan="6" style="text-align:center;color:var(--muted);padding:24px">暂无账号</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Settings -->
+    <div class="page-wrap" :class="{active:view==='settings'}">
+      <div class="scroll-area">
+        <div class="page-pad">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px">
+            <h1 style="font-size:24px;font-weight:700">设置</h1>
+          </div>
+          <div class="card">
+            <div class="card-head">当前请求 Key</div>
+            <div style="padding:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+              <div class="modal-field" style="min-width:280px;flex:1">
+                <label>API Key</label>
+                <input class="modal-input" type="password" x-model="apiKeyInput" placeholder="sk-aistudio-...">
+              </div>
+              <button class="btn" @click="saveApiKey()">保存</button>
+              <button class="btn" @click="clearApiKey()">清除</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">API Key 管理</div>
+            <div style="padding:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+              <div class="modal-field" style="min-width:220px">
+                <label>Key 名称</label>
+                <input class="modal-input" x-model="newKeyName" placeholder="默认 Key">
+              </div>
+              <button class="btn btn-primary" @click="createApiKey()">创建 Key</button>
+            </div>
+            <div class="key-box" x-show="createdKey">
+              <div class="key-label">新 Key</div>
+              <code x-text="createdKey"></code>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>前缀</th>
+                    <th>创建时间</th>
+                    <th>最后使用</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="k in apiKeys" :key="k.id">
+                    <tr>
+                      <td x-text="k.name"></td>
+                      <td style="font-family:monospace" x-text="k.prefix+'...'"></td>
+                      <td x-text="fmtDate(k.created_at ? k.created_at * 1000 : null)"></td>
+                      <td x-text="fmtDate(k.last_used_at ? k.last_used_at * 1000 : null)"></td>
+                      <td><button class="btn btn-sm btn-danger" @click="deleteApiKey(k.id)">删除</button></td>
+                    </tr>
+                  </template>
+                  <tr x-show="!apiKeys.length">
+                    <td colspan="5" style="text-align:center;color:var(--muted);padding:24px">暂无 API Key</td>
                   </tr>
                 </tbody>
               </table>
@@ -413,7 +545,40 @@
       </div>
     </div>
   </div>
+  <!-- Account Edit Modal -->
+  <div class="modal-overlay" x-show="accountModal.open" x-cloak @click.self="accountModal.open=false"
+    x-transition.opacity>
+    <div class="modal" x-show="accountModal.open" x-transition>
+      <div class="modal-head">
+        <span>编辑账号</span>
+        <button class="modal-close" @click="accountModal.open=false">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-field">
+          <label>账号名称</label>
+          <input class="modal-input" x-model="accountModal.name" placeholder="账号名称">
+        </div>
+        <div class="modal-field">
+          <label>邮箱</label>
+          <input class="modal-input" x-model="accountModal.email" placeholder="user@gmail.com">
+        </div>
+        <div class="modal-field">
+          <label>账号 ID</label>
+          <input class="modal-input" x-model="accountModal.id" disabled>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" @click="accountModal.open=false">取消</button>
+        <button class="btn btn-primary" :disabled="accountModal.saving" @click="saveAccountMeta()">
+          <span x-show="!accountModal.saving">保存</span>
+          <span x-show="accountModal.saving">保存中...</span>
+        </button>
+      </div>
+    </div>
+  </div>
   <div class="toast" :class="{show:toast.show}" x-text="toast.msg"></div>
+  </div>
+  </template>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github.min.css">
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>

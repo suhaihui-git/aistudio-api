@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from aistudio_api.application.api_service import health_response, stats_response
-from aistudio_api.api.dependencies import get_runtime_state
+from aistudio_api.api.dependencies import get_runtime_state, require_admin
 
 router = APIRouter()
 
@@ -17,7 +17,7 @@ async def health():
 
 
 @router.get("/stats")
-async def stats():
+async def stats(admin=Depends(require_admin)):
     return stats_response()
 
 
@@ -29,7 +29,7 @@ class RotationModeRequest(BaseModel):
 
 
 @router.get("/rotation")
-async def get_rotation_status(runtime_state=Depends(get_runtime_state)):
+async def get_rotation_status(runtime_state=Depends(get_runtime_state), admin=Depends(require_admin)):
     """获取轮询状态。"""
     rotator = runtime_state.rotator
     if rotator is None:
@@ -47,6 +47,7 @@ async def get_rotation_status(runtime_state=Depends(get_runtime_state)):
 async def set_rotation_mode(
     req: RotationModeRequest,
     runtime_state=Depends(get_runtime_state),
+    admin=Depends(require_admin),
 ):
     """设置轮询模式。"""
     rotator = runtime_state.rotator
@@ -68,7 +69,7 @@ async def set_rotation_mode(
 
 
 @router.get("/rotation/accounts")
-async def get_rotation_accounts(runtime_state=Depends(get_runtime_state)):
+async def get_rotation_accounts(runtime_state=Depends(get_runtime_state), admin=Depends(require_admin)):
     """获取所有账号的轮询统计。"""
     rotator = runtime_state.rotator
     if rotator is None:
@@ -78,7 +79,7 @@ async def get_rotation_accounts(runtime_state=Depends(get_runtime_state)):
 
 
 @router.post("/rotation/next")
-async def force_next_account(runtime_state=Depends(get_runtime_state)):
+async def force_next_account(runtime_state=Depends(get_runtime_state), admin=Depends(require_admin)):
     """强制切换到下一个可用账号。"""
     rotator = runtime_state.rotator
     if rotator is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -15,6 +16,8 @@ from aistudio_api.config import settings
 
 logger = logging.getLogger("aistudio.camoufox")
 LAUNCHER_PATH = Path(__file__).with_name("camoufox_launcher.py")
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+SRC_ROOT = PROJECT_ROOT / "src"
 
 
 class CamoufoxManager:
@@ -60,11 +63,19 @@ class CamoufoxManager:
         if self.headless:
             cmd.append("--headless")
 
+        env = os.environ.copy()
+        python_path_parts = [str(SRC_ROOT)]
+        if env.get("PYTHONPATH"):
+            python_path_parts.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(python_path_parts)
+
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
 
         for _ in range(30):
