@@ -110,8 +110,19 @@ class LoginService:
             from playwright.async_api import async_playwright
             playwright = await async_playwright().start()
             browser = await playwright.firefox.connect(ws_endpoint)
-            context = await browser.new_context()
+            context = await browser.new_context(
+                viewport={
+                    "width": settings.login_browser_width,
+                    "height": settings.login_browser_height,
+                }
+            )
             page = await context.new_page()
+            await page.set_viewport_size(
+                {
+                    "width": settings.login_browser_width,
+                    "height": settings.login_browser_height,
+                }
+            )
 
             # 导航到 Google 登录页面
             logger.info("打开 Google 登录页面")

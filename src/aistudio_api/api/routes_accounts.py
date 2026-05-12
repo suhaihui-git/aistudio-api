@@ -107,7 +107,7 @@ def _build_browser_url(request: Request) -> str | None:
         host_part = f"[{host_part}]"
     if port:
         host_part = f"{host_part}:{port}"
-    return f"{scheme}://{host_part}/vnc.html"
+    return f"{scheme}://{host_part}/vnc.html?autoconnect=1&resize=scale&reconnect=1"
 
 
 @router.post("/login/start", response_model=LoginStartResponse)
