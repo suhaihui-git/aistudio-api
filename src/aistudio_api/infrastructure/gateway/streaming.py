@@ -15,6 +15,7 @@ from aistudio_api.infrastructure.gateway.capture import CapturedRequest
 from aistudio_api.infrastructure.gateway.request_rewriter import modify_body
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.gateway.stream_parser import IncrementalJSONStreamParser, classify_chunk
+from aistudio_api.infrastructure.gateway.timeouts import completion_timeout_seconds
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
 
 logger = logging.getLogger("aistudio")
@@ -176,6 +177,7 @@ class StreamingGateway:
         raw_parts: list[str] = []
         status_code = 0
         replay_mode = "browser"
+        timeout_seconds = completion_timeout_seconds(max_tokens=max_tokens, base_seconds=settings.timeout_stream)
 
         async def consume_events(events):
             nonlocal latest_usage, status_code
@@ -197,7 +199,7 @@ class StreamingGateway:
             async for event in consume_events(
                 self._session.send_streaming_request(
                     body=modified_body,
-                    timeout_ms=settings.timeout_stream * 1000,
+                    timeout_ms=timeout_seconds * 1000,
                 )
             ):
                 yield event
@@ -214,7 +216,7 @@ class StreamingGateway:
                 self._stream_via_http(
                     captured=captured,
                     modified_body=modified_body,
-                    timeout_ms=settings.timeout_stream * 1000,
+                    timeout_ms=timeout_seconds * 1000,
                 )
             ):
                 yield event

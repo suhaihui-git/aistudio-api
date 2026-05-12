@@ -16,6 +16,7 @@ from aistudio_api.infrastructure.gateway.request_rewriter import TOOLS_TEMPLATES
 from aistudio_api.infrastructure.gateway.replay import RequestReplayService
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.gateway.streaming import StreamingGateway
+from aistudio_api.infrastructure.gateway.timeouts import completion_timeout_seconds
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent, AistudioPart
 
 logger = logging.getLogger("aistudio")
@@ -249,7 +250,8 @@ class AIStudioClient:
             sanitize_plain_text=sanitize_plain_text,
         )
 
-        status, raw = await self._replay_service.replay(captured, body=modified_body)
+        timeout = completion_timeout_seconds(max_tokens=max_tokens, base_seconds=settings.timeout_replay)
+        status, raw = await self._replay_service.replay(captured, body=modified_body, timeout=timeout)
         raw_text = raw.decode("utf-8", errors="replace")
         self._dump_raw_exchange(
             kind="generate_content",
