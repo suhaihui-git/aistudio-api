@@ -124,6 +124,10 @@ class AccountService:
         """获取登录状态。"""
         return self._login.get_status(session_id)
 
+    async def paste_login_text(self, session_id: str, text: str, *, press_enter: bool = False) -> None:
+        """向正在登录的远程浏览器焦点输入框输入文本。"""
+        await self._login.paste_text(session_id, text, press_enter=press_enter)
+
     async def activate_account(
         self,
         account_id: str,

@@ -211,6 +211,7 @@ class AccountStore:
         email: str | None,
         storage_state: dict[str, Any],
         account_id: str | None = None,
+        profile_source: str | Path | None = None,
     ) -> AccountMeta:
         """保存新账号。"""
         if account_id is None:
@@ -227,6 +228,8 @@ class AccountStore:
         account_dir = self._accounts_dir / account_id
         account_dir.mkdir(parents=True, exist_ok=True)
         self._reset_profile_seed(account_dir)
+        if profile_source is not None:
+            self._copy_profile_dir(Path(profile_source), account_dir / "profile")
         # 写入 auth.json
         (account_dir / "auth.json").write_text(
             json.dumps(storage_state, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -339,6 +342,26 @@ class AccountStore:
         profile_dir = account_dir / "profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
         return profile_dir
+
+    def _copy_profile_dir(self, source_dir: Path, target_dir: Path) -> None:
+        """复制已登录的浏览器 profile，避免仅靠 cookie 重放触发 Google 二次确认。"""
+        if not source_dir.is_dir():
+            raise ValueError(f"profile_source 不存在或不是目录: {source_dir}")
+        if target_dir.exists():
+            self._remove_account_dir(target_dir)
+        ignore = shutil.ignore_patterns(
+            ".parentlock",
+            "parent.lock",
+            "lock",
+            "*.lock",
+            "cache2",
+            "startupCache",
+            "shader-cache",
+            "thumbnails",
+            "minidumps",
+            "crashes",
+        )
+        shutil.copytree(source_dir, target_dir, ignore=ignore)
 
     def _reset_profile_seed(self, account_dir: Path) -> None:
         profile_dir = account_dir / "profile"

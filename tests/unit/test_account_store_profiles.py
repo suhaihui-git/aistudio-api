@@ -45,6 +45,26 @@ def test_overwriting_account_resets_profile_dir(tmp_path):
     assert not stale_file.exists()
 
 
+def test_save_account_copies_logged_in_profile(tmp_path):
+    store = AccountStore(accounts_dir=tmp_path / "accounts")
+    source_profile = tmp_path / "source-profile"
+    source_profile.mkdir()
+    (source_profile / "cookies.sqlite").write_text("session", encoding="utf-8")
+    (source_profile / "cache2").mkdir()
+    (source_profile / "cache2" / "ignored").write_text("cache", encoding="utf-8")
+
+    account = store.save_account(
+        "test",
+        None,
+        _storage_state(),
+        profile_source=source_profile,
+    )
+    profile_path = store.get_profile_path(account.id)
+
+    assert (profile_path / "cookies.sqlite").read_text(encoding="utf-8") == "session"
+    assert not (profile_path / "cache2").exists()
+
+
 def test_save_account_rejects_unsafe_account_id(tmp_path):
     store = AccountStore(accounts_dir=tmp_path)
 

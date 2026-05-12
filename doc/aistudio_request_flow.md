@@ -198,6 +198,8 @@ AISTUDIO_LOGIN_VNC_PASSWORD=一个强密码
 
 显示注意：自动推导的 noVNC 地址会带 `resize=scale`，让远程桌面按当前浏览器窗口缩放。如果仍只能看到部分页面，可以在 noVNC 左侧设置里把 `Scaling Mode` 改成 `Local Scaling`，或调大 `AISTUDIO_LOGIN_DESKTOP_GEOMETRY`、`AISTUDIO_LOGIN_BROWSER_WIDTH`。
 
+输入注意：noVNC 原生粘贴受浏览器剪贴板权限限制。容器内会启动 `autocutsel` 同步 X11 剪贴板；如果仍无法粘贴，账号管理页会在登录会话期间显示“远程登录输入”。先点击 noVNC 里的目标输入框，再在管理页粘贴文本并发送，后端会通过 Playwright 直接写入当前焦点输入框。
+
 ## 3. OpenAI 兼容请求格式
 
 入口：

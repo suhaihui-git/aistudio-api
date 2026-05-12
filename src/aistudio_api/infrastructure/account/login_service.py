@@ -5,15 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from aistudio_api.config import settings
-from aistudio_api.infrastructure.browser.camoufox_manager import CamoufoxManager
+from aistudio_api.config import build_camoufox_proxy, settings
 
 logger = logging.getLogger("aistudio.login")
 LOCAL_NOVNC_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -41,6 +42,7 @@ class LoginSession:
     error: str | None = None
     browser_url: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    paste_error: str | None = None
 
 
 class LoginService:
@@ -76,6 +78,43 @@ class LoginService:
         """获取登录状态。"""
         return self._sessions.get(session_id)
 
+    async def paste_text(self, session_id: str, text: str, *, press_enter: bool = False) -> None:
+        """Paste text into the active element of a running login browser."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise KeyError("登录会话不存在")
+        if session.status is not LoginStatus.PENDING:
+            raise RuntimeError("登录会话已结束")
+        page = getattr(session, "_page", None)
+        if page is None:
+            raise RuntimeError("登录浏览器尚未就绪")
+        try:
+            focused = await page.evaluate(
+                """
+                (text) => {
+                    const active = document.activeElement;
+                    const editable = active && (
+                        active.tagName === 'INPUT'
+                        || active.tagName === 'TEXTAREA'
+                        || active.isContentEditable
+                    );
+                    if (!editable) return false;
+                    active.focus();
+                    return true;
+                }
+                """,
+                text,
+            )
+            if not focused:
+                raise RuntimeError("远程浏览器当前没有聚焦的输入框")
+            await page.keyboard.insert_text(text)
+            if press_enter:
+                await page.keyboard.press("Enter")
+            session.paste_error = None
+        except Exception as exc:
+            session.paste_error = str(exc)
+            raise
+
     @staticmethod
     def is_local_novnc_url(url: str | None) -> bool:
         if not url:
@@ -94,29 +133,33 @@ class LoginService:
     ) -> None:
         """登录工作协程。"""
         session = self._sessions[session_id]
-        manager = CamoufoxManager(
-            port=self._port,
-            headless=False,  # 有头模式，用户需要看到浏览器
-        )
-        playwright = None
-        browser = None
+        login_profile_dir = Path(settings.tmp_dir) / f"aistudio-login-profile-{session_id}"
+        camoufox = None
+        camoufox_entered = False
+        storage_state: dict[str, Any] | None = None
+        detected_email: str | None = None
+        account_name = name or "Google 账号"
         try:
             # 启动浏览器
-            logger.info("启动登录浏览器，端口 %d", self._port)
-            ws_endpoint = await manager.start()
-            logger.info("浏览器已启动: %s", ws_endpoint)
+            logger.info("启动登录浏览器，使用临时 profile: %s", login_profile_dir)
+            from camoufox.async_api import AsyncCamoufox
 
-            # 连接 Playwright
-            from playwright.async_api import async_playwright
-            playwright = await async_playwright().start()
-            browser = await playwright.firefox.connect(ws_endpoint)
-            context = await browser.new_context(
+            login_profile_dir.mkdir(parents=True, exist_ok=True)
+            camoufox = AsyncCamoufox(
+                headless=False,  # 有头模式，用户需要看到浏览器
+                main_world_eval=True,
+                proxy=build_camoufox_proxy(settings.proxy_url),
+                persistent_context=True,
+                user_data_dir=str(login_profile_dir),
                 viewport={
                     "width": settings.login_browser_width,
                     "height": settings.login_browser_height,
-                }
+                },
             )
-            page = await context.new_page()
+            context = await camoufox.__aenter__()
+            camoufox_entered = True
+            page = context.pages[0] if context.pages else await context.new_page()
+            setattr(session, "_page", page)
             await page.set_viewport_size(
                 {
                     "width": settings.login_browser_width,
@@ -136,11 +179,9 @@ class LoginService:
             logger.info("等待用户登录...")
             try:
                 ready_state = await self._wait_for_aistudio_ready(page, timeout=300)
-            except asyncio.TimeoutError:
-                session.status = LoginStatus.FAILED
-                session.error = "登录超时（5 分钟）"
+            except asyncio.TimeoutError as exc:
                 logger.warning("登录超时")
-                return
+                raise RuntimeError("登录超时（5 分钟）") from exc
 
             detected_email = await self._extract_email_from_page(page)
             logger.info(
@@ -191,10 +232,37 @@ class LoginService:
             account_name = name or detected_email or "Google 账号"
             if detected_email and not name:
                 account_name = detected_email
+
+        except Exception as e:
+            session.status = LoginStatus.FAILED
+            session.error = str(e)
+            logger.exception("登录失败")
+        finally:
+            # 先关闭持久化 context，确保 cookies / indexedDB / session 文件完整落盘。
+            try:
+                if camoufox_entered and camoufox:
+                    await camoufox.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+        if session.status is LoginStatus.FAILED:
+            try:
+                shutil.rmtree(login_profile_dir, ignore_errors=True)
+            except Exception:
+                pass
+            if getattr(session, "_page", None) is not None:
+                setattr(session, "_page", None)
+            self._tasks.pop(session_id, None)
+            return
+
+        try:
+            if storage_state is None:
+                raise RuntimeError("登录完成但未获取到 storage state")
             meta = account_store.save_account(
                 name=account_name,
                 email=detected_email,
                 storage_state=storage_state,
+                profile_source=login_profile_dir,
             )
 
             session.status = LoginStatus.COMPLETED
@@ -205,24 +273,15 @@ class LoginService:
         except Exception as e:
             session.status = LoginStatus.FAILED
             session.error = str(e)
-            logger.exception("登录失败")
+            logger.exception("保存登录账号失败")
         finally:
-            # 清理浏览器和 Playwright
             try:
-                if browser:
-                    await browser.close()
-            except Exception:
-                pass
-            try:
-                if playwright:
-                    await playwright.stop()
-            except Exception:
-                pass
-            try:
-                await manager.stop()
+                shutil.rmtree(login_profile_dir, ignore_errors=True)
             except Exception:
                 pass
             # 清理任务引用
+            if getattr(session, "_page", None) is not None:
+                setattr(session, "_page", None)
             self._tasks.pop(session_id, None)
 
     async def _wait_for_aistudio_ready(self, page, timeout: int) -> dict[str, Any]:

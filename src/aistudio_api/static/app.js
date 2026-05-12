@@ -12,6 +12,7 @@ function app() {
     toast: { show: false, msg: '', t: null },
     cookieModal: { open: false, cookies: '', name: '', email: '', importing: false },
     accountModal: { open: false, id: '', name: '', email: '', saving: false },
+    loginAssist: { sessionId: '', browserUrl: '', text: '', pressEnter: false, active: false, busy: false },
 
     clearMessages() {
       if (!confirm('确定要清空所有消息吗？')) return;
@@ -301,6 +302,11 @@ function app() {
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d.detail?.message || d.detail || '启动登录失败');
+        this.loginAssist.sessionId = d.session_id || '';
+        this.loginAssist.browserUrl = d.browser_url || '';
+        this.loginAssist.text = '';
+        this.loginAssist.pressEnter = false;
+        this.loginAssist.active = !!d.session_id;
         if (d.browser_url) {
           window.open(d.browser_url, '_blank', 'noopener,noreferrer');
           this.showToast('登录已开始，请在远程浏览器中完成登录');
@@ -309,6 +315,23 @@ function app() {
         }
         this.pollLoginStatus(d.session_id);
       } catch (e) { this.showToast(e.message || '网络错误') }
+    },
+    async pasteLoginText() {
+      const text = this.loginAssist.text;
+      if (!this.loginAssist.sessionId || !text || this.loginAssist.busy) return;
+      this.loginAssist.busy = true;
+      try {
+        const r = await fetch(`/accounts/login/${this.loginAssist.sessionId}/paste`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, press_enter: this.loginAssist.pressEnter })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.detail?.message || d.detail || '输入失败');
+        this.loginAssist.text = '';
+        this.showToast('已输入到远程浏览器');
+      } catch (e) { this.showToast(e.message || '输入失败，请先点击远程浏览器里的输入框') }
+      finally { this.loginAssist.busy = false }
     },
     async pollLoginStatus(sessionId) {
       if (!sessionId) return;
@@ -320,12 +343,14 @@ function app() {
           if (!r.ok) throw new Error(d.detail || '查询登录状态失败');
           if (d.status === 'completed') {
             this.showToast(`账号登录成功${d.email ? ': ' + d.email : ''}`);
+            this.loginAssist.active = false;
             this.loadAccounts();
             this.loadRotation();
             return;
           }
           if (d.status === 'failed') {
             this.showToast(d.error || '登录失败');
+            this.loginAssist.active = false;
             return;
           }
         } catch (e) {

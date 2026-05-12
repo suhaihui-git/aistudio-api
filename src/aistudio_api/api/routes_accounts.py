@@ -42,6 +42,12 @@ class LoginStatusResponse(BaseModel):
     email: str | None = None
     error: str | None = None
     browser_url: str | None = None
+    paste_error: str | None = None
+
+
+class LoginPasteRequest(BaseModel):
+    text: str
+    press_enter: bool = False
 
 
 class UpdateAccountRequest(BaseModel):
@@ -142,7 +148,32 @@ async def login_status(
         email=session.email,
         error=session.error,
         browser_url=session.browser_url,
+        paste_error=session.paste_error,
     )
+
+
+@router.post("/login/{session_id}/paste")
+async def login_paste(
+    session_id: str,
+    req: LoginPasteRequest,
+    account_service=Depends(get_account_service),
+):
+    """向登录浏览器当前焦点输入框输入文本。"""
+    if not req.text:
+        raise HTTPException(status_code=400, detail="输入内容不能为空")
+    try:
+        await account_service.paste_login_text(
+            session_id,
+            req.text,
+            press_enter=req.press_enter,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="登录会话不存在") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @router.get("", response_model=list[AccountResponse])

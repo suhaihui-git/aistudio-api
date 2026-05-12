@@ -652,24 +652,50 @@ class BrowserSession:
         page = self._ensure_botguard_service_sync()
         log.debug(f"[timing] botguard done in {_t.time()-_t0:.1f}s, starting template capture")
         captured: dict[str, Any] = {}
+        capture_state: dict[str, Any] = {
+            "request_count": 0,
+            "response_count": 0,
+            "last_generate_url": "",
+            "last_generate_method": "",
+            "last_generate_body_len": 0,
+            "last_generate_error": "",
+        }
+
+        def capture_from_request(request, source: str) -> None:
+            if captured or not self._is_generate_content_url(request.url):
+                return
+            capture_state["request_count"] += 1
+            capture_state["last_generate_url"] = request.url
+            capture_state["last_generate_method"] = getattr(request, "method", "")
+            try:
+                body = request.post_data or ""
+                if not body:
+                    post_data_buffer = getattr(request, "post_data_buffer", None)
+                    if callable(post_data_buffer):
+                        post_data_buffer = post_data_buffer()
+                    if isinstance(post_data_buffer, bytes):
+                        body = post_data_buffer.decode("utf-8", errors="replace")
+                capture_state["last_generate_body_len"] = len(body)
+                if not body:
+                    capture_state["last_generate_error"] = f"{source}: empty request body"
+                    return
+                captured["url"] = request.url
+                captured["headers"] = dict(request.headers)
+                captured["body"] = body
+                log.debug("template request captured from %s: url=%s body=%s chars", source, request.url, len(body))
+            except Exception as exc:
+                capture_state["last_generate_error"] = f"{source}: {exc}"
+
+        def on_request(request):
+            capture_from_request(request, "request")
 
         def on_response(response):
-            if "GenerateContent" not in response.url or "Count" in response.url or captured:
+            if not self._is_generate_content_url(response.url):
                 return
-            try:
-                text = response.text()
-            except Exception:
-                return
-            if len(text) <= 100:
-                return
-            req = response.request
-            body = req.post_data
-            if not body or len(body) <= 100:
-                return
-            captured["url"] = req.url
-            captured["headers"] = dict(req.headers)
-            captured["body"] = body
+            capture_state["response_count"] += 1
+            capture_from_request(response.request, "response")
 
+        page.on("request", on_request)
         page.on("response", on_response)
         try:
             textarea = page.query_selector("textarea")
@@ -680,18 +706,20 @@ class BrowserSession:
             if not self._click_run_button_sync(page):
                 raise RuntimeError("failed to trigger send during template capture")
 
-            for _ in range(30):
+            timeout_seconds = max(10, settings.timeout_capture)
+            for _ in range(timeout_seconds):
                 page.wait_for_timeout(1000)
                 if captured:
                     break
             if not captured:
-                raise RuntimeError(f"template capture timeout for model={model}")
+                raise RuntimeError(self._build_template_capture_error_sync(page, model, capture_state))
 
             self._wait_until_idle_sync(page)
             self._templates[model] = captured
             log.debug(f"[timing] template captured for {model} in {_t.time()-_t0:.1f}s")
             return captured
         finally:
+            page.remove_listener("request", on_request)
             page.remove_listener("response", on_response)
 
     def _generate_snapshot_sync(self, contents: list[AistudioContent]) -> str:
@@ -1026,22 +1054,123 @@ mw:((hash) => {
             f"url={url}, title={title}, has_textarea={has_textarea}, body={body!r}"
         )
 
+    def _is_generate_content_url(self, url: str) -> bool:
+        lowered = (url or "").lower()
+        return "generatecontent" in lowered and "count" not in lowered
+
+    def _build_template_capture_error_sync(self, page, model: str, capture_state: dict[str, Any]) -> str:
+        try:
+            page_state = page.evaluate(
+                """
+                () => {
+                    const buttons = Array.from(document.querySelectorAll('button')).map((button) => ({
+                        text: (button.textContent || '').trim().slice(0, 40),
+                        aria: (button.getAttribute('aria-label') || '').slice(0, 60),
+                        title: (button.getAttribute('title') || '').slice(0, 60),
+                        disabled: button.disabled || button.getAttribute('aria-disabled') === 'true',
+                        visible: !!(button.offsetWidth || button.offsetHeight || button.getClientRects().length),
+                    })).slice(0, 20);
+                    const active = document.activeElement;
+                    return {
+                        url: location.href,
+                        title: document.title,
+                        hasTextarea: !!document.querySelector('textarea'),
+                        hasMakerSuite: !!window.default_MakerSuite,
+                        hasBotguardService: !!window.__bg_service,
+                        hasRunButton: buttons.some((button) => {
+                            const label = `${button.text} ${button.aria} ${button.title}`.toLowerCase();
+                            return button.visible && !button.disabled && (label.includes('run') || label.includes('send'));
+                        }),
+                        lastHookUrl: window.__last_hook_url || '',
+                        activeElement: active ? {
+                            tag: active.tagName,
+                            type: active.getAttribute('type') || '',
+                            aria: active.getAttribute('aria-label') || '',
+                        } : null,
+                        buttons,
+                        textPreview: (document.body?.innerText || '').slice(0, 300),
+                    };
+                }
+                """
+            )
+        except Exception as exc:
+            page_state = {"error": str(exc)}
+
+        return (
+            f"template capture timeout for model={model}; "
+            f"capture_state={capture_state}; page_state={page_state}"
+        )
+
     def _click_run_button_sync(self, page) -> bool:
+        selectors = [
+            "button:has-text('Run')",
+            "button:has-text('Send')",
+            "button[aria-label*='Run' i]",
+            "button[aria-label*='Send' i]",
+            "button[title*='Run' i]",
+            "button[title*='Send' i]",
+        ]
+        for selector in selectors:
+            try:
+                locator = page.locator(selector).first
+                if not locator.is_visible(timeout=500) or not locator.is_enabled(timeout=500):
+                    continue
+                locator.click(timeout=5000)
+                return True
+            except Exception:
+                continue
+
         try:
-            button = page.query_selector("button:has-text('Run')")
+            clicked = page.evaluate(
+                """
+                () => {
+                    const candidates = Array.from(document.querySelectorAll('button'));
+                    for (const button of candidates) {
+                        const label = [
+                            button.textContent || '',
+                            button.getAttribute('aria-label') || '',
+                            button.getAttribute('title') || '',
+                        ].join(' ').trim().toLowerCase();
+                        const visible = !!(button.offsetWidth || button.offsetHeight || button.getClientRects().length);
+                        const disabled = button.disabled || button.getAttribute('aria-disabled') === 'true';
+                        if (visible && !disabled && (label.includes('run') || label.includes('send'))) {
+                            button.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                """
+            )
+            if clicked:
+                return True
         except Exception:
-            return False
-        if button is None:
-            return False
+            pass
+
         try:
-            button.click()
+            page.keyboard.press("Control+Enter")
             return True
         except Exception:
             return False
 
     def _has_run_button_sync(self, page) -> bool:
         try:
-            return page.query_selector("button:has-text('Run')") is not None
+            return bool(
+                page.evaluate(
+                    """
+                    () => Array.from(document.querySelectorAll('button')).some((button) => {
+                        const label = [
+                            button.textContent || '',
+                            button.getAttribute('aria-label') || '',
+                            button.getAttribute('title') || '',
+                        ].join(' ').trim().toLowerCase();
+                        const visible = !!(button.offsetWidth || button.offsetHeight || button.getClientRects().length);
+                        const disabled = button.disabled || button.getAttribute('aria-disabled') === 'true';
+                        return visible && !disabled && (label.includes('run') || label.includes('send'));
+                    })
+                    """
+                )
+            )
         except Exception:
             return False
 

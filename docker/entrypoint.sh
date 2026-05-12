@@ -18,6 +18,9 @@ if [ "${AISTUDIO_ENABLE_LOGIN_DESKTOP:-0}" = "1" ]; then
   Xvfb "$DISPLAY" -screen 0 "$VNC_GEOMETRY" -nolisten tcp &
   XVFB_PID="$!"
 
+  autocutsel -fork -selection CLIPBOARD >/tmp/autocutsel-clipboard.log 2>&1 || true
+  autocutsel -fork -selection PRIMARY >/tmp/autocutsel-primary.log 2>&1 || true
+
   if [ -n "$VNC_PASSWORD" ]; then
     mkdir -p /root/.vnc
     x11vnc -storepasswd "$VNC_PASSWORD" /root/.vnc/passwd >/dev/null

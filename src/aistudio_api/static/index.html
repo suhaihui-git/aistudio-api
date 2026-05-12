@@ -372,6 +372,24 @@
               <button class="btn btn-primary" @click="addAccount()">+ 登录账号</button>
             </div>
           </div>
+          <div class="card" style="margin-bottom:24px" x-show="loginAssist.active" x-cloak>
+            <div class="card-head">远程登录输入</div>
+            <div style="padding:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+              <div class="modal-field" style="min-width:280px;flex:1">
+                <label>输入到 noVNC 当前焦点框</label>
+                <input class="modal-input" type="password" x-model="loginAssist.text"
+                  @keydown.enter.prevent="pasteLoginText()" placeholder="先点远程浏览器输入框，再在这里粘贴">
+              </div>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);padding-bottom:11px">
+                <input type="checkbox" x-model="loginAssist.pressEnter"> 输入后回车
+              </label>
+              <button class="btn btn-primary" :disabled="loginAssist.busy||!loginAssist.text" @click="pasteLoginText()">
+                <span x-show="!loginAssist.busy">输入到远程浏览器</span>
+                <span x-show="loginAssist.busy">输入中...</span>
+              </button>
+              <button class="btn" x-show="loginAssist.browserUrl" @click="window.open(loginAssist.browserUrl,'_blank','noopener,noreferrer')">重新打开 noVNC</button>
+            </div>
+          </div>
           <div class="card" style="margin-bottom:24px">
             <div class="card-head">轮询设置</div>
             <div style="padding:20px;display:flex;flex-wrap:wrap;gap:16px;align-items:end">
