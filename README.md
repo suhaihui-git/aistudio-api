@@ -44,8 +44,18 @@ docker run -d \
   ghcr.io/chrysoljq/aistudio-api:latest
 ```
 
-首次启动后，访问 http://localhost:8080 进行 Google 账号登录，支持浏览器登录和手动导入cookies（访问）。
+首次启动后，访问 http://localhost:8080 进入管理后台并添加 Google 账号。服务器/Docker 环境通常没有可见桌面，推荐在本地浏览器登录 Google 后导入 Cookie，或在本地导出账号包再导入服务器。
 ![alt text](image/login.png)
+
+### 服务器账号登录建议
+
+- 推荐长期方案：每个账号会保存独立的持久浏览器 Profile，目录为 `data/accounts/{account_id}/profile`，同时保留 `auth.json` 用于导入导出和兼容旧流程。
+- Docker 部署必须持久化 `/app/data`，否则重启后账号、Cookie 和浏览器 Profile 都会丢失。
+- 线上环境可启用内置远程登录桌面：容器会启动 Xvfb + x11vnc + noVNC，管理后台点击“登录账号”后会打开 noVNC 页面，在里面完成 Google 登录。
+- Docker Compose 默认把 noVNC 绑定到 `127.0.0.1:6080`。线上请用反向代理/VPN 暴露它，并设置 `AISTUDIO_LOGIN_NOVNC_URL` 为可访问地址，例如 `https://你的域名/novnc/vnc.html`；如果确实要直接开放端口，把 `AISTUDIO_LOGIN_NOVNC_BIND` 改成 `0.0.0.0:6080`。
+- noVNC 登录桌面可以操作 Google 账号，必须放在内网/VPN/反代鉴权后面，或至少设置 `AISTUDIO_LOGIN_VNC_PASSWORD`；当 `AISTUDIO_LOGIN_NOVNC_BIND` 不是 localhost 且未设置密码时，容器会拒绝启动。
+- 不使用 Docker 时，需要自行提供 `DISPLAY`/`WAYLAND_DISPLAY`，例如安装并启动 Xvfb/VNC，然后再点击“登录账号”。
+
 ## 使用示例
 
 ### OpenAI 兼容接口
@@ -149,6 +159,10 @@ python3 main.py client "画一只猫" --image --save cat.png
 | `AISTUDIO_SNAPSHOT_CACHE_TTL` | `3600` | BotGuard snapshot 缓存时间 |
 | `AISTUDIO_ACCOUNT_ROTATION_MODE` | `round_robin` | 轮询模式：`round_robin`、`lru`、`least_rl` |
 | `AISTUDIO_ACCOUNT_COOLDOWN_SECONDS` | `60` | 限流后冷却时间 |
+| `AISTUDIO_ACCOUNT_OPERATION_TIMEOUT` | `30` | 账号切换、导入、导出等独占操作等待请求结束的最长时间 |
+| `AISTUDIO_LOGIN_NOVNC_BIND` | `127.0.0.1:6080` | Docker noVNC 暴露地址，公网绑定必须设置 VNC 密码或放在反代鉴权后 |
+| `AISTUDIO_LOGIN_NOVNC_URL` | 空 | 管理后台打开远程登录桌面的 URL |
+| `AISTUDIO_LOGIN_VNC_PASSWORD` | 空 | noVNC/VNC 登录密码 |
 | `AISTUDIO_DUMP_RAW_RESPONSE` | `0` | 保存原始响应到磁盘（调试） |
 
 ## 架构

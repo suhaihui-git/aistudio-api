@@ -90,10 +90,12 @@ class Settings:
         str(Path(__file__).resolve().parents[2] / "data" / "api_keys.json"),
     )
     login_camoufox_port: int = int(os.getenv("AISTUDIO_LOGIN_CAMOUFOX_PORT", "9223"))
+    login_novnc_url: str = os.getenv("AISTUDIO_LOGIN_NOVNC_URL", "")
     # 账号轮询配置
     account_rotation_mode: str = os.getenv("AISTUDIO_ACCOUNT_ROTATION_MODE", "round_robin")  # round_robin, lru, least_rl
     account_cooldown_seconds: int = int(os.getenv("AISTUDIO_ACCOUNT_COOLDOWN_SECONDS", "60"))
     account_max_retries: int = int(os.getenv("AISTUDIO_ACCOUNT_MAX_RETRIES", "3"))
+    account_operation_timeout: float = float(os.getenv("AISTUDIO_ACCOUNT_OPERATION_TIMEOUT", "30"))
     max_concurrency: int = int(os.getenv("AISTUDIO_MAX_CONCURRENCY", "3"))
     # Pure HTTP mode: no browser needed for snapshot generation
     use_pure_http: bool = os.getenv("AISTUDIO_USE_PURE_HTTP", "0") in ("1", "true", "True")

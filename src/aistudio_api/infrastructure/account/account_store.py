@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("aistudio.account_store")
+_ACCOUNT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # 默认搜索路径（与 config.py 保持一致）
 _SEARCH_ROOTS: list[Path] = [
@@ -48,6 +50,11 @@ def _generate_account_id() -> str:
     """生成 acc_ 前缀的随机 ID。"""
     import secrets
     return f"acc_{secrets.token_hex(4)}"
+
+
+def _validate_account_id(account_id: str) -> None:
+    if account_id in {"", ".", ".."} or not _ACCOUNT_ID_RE.fullmatch(account_id):
+        raise ValueError("账号 ID 格式不正确")
 
 
 @dataclass
@@ -125,6 +132,7 @@ class AccountStore:
         account_dir.mkdir(parents=True, exist_ok=True)
         # 复制 auth.json
         shutil.copy2(legacy, account_dir / "auth.json")
+        (account_dir / "profile").mkdir(parents=True, exist_ok=True)
         # 写入 meta.json
         (account_dir / "meta.json").write_text(
             json.dumps(meta.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
@@ -179,6 +187,13 @@ class AccountStore:
             return None
         return self._accounts_dir / account.id / "auth.json"
 
+    def get_active_profile_path(self) -> Path | None:
+        """获取当前活跃账号的持久化浏览器 Profile 路径。"""
+        account = self.get_active_account()
+        if account is None:
+            return None
+        return self.get_profile_path(account.id)
+
     def set_active_account(self, account_id: str) -> AccountMeta | None:
         """设置活跃账号，返回账号元数据或 None（如果不存在）。"""
         registry = self._load_registry()
@@ -200,6 +215,7 @@ class AccountStore:
         """保存新账号。"""
         if account_id is None:
             account_id = _generate_account_id()
+        _validate_account_id(account_id)
         now = datetime.now(timezone.utc).isoformat()
         meta = AccountMeta(
             id=account_id,
@@ -210,6 +226,7 @@ class AccountStore:
         )
         account_dir = self._accounts_dir / account_id
         account_dir.mkdir(parents=True, exist_ok=True)
+        self._reset_profile_seed(account_dir)
         # 写入 auth.json
         (account_dir / "auth.json").write_text(
             json.dumps(storage_state, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -310,3 +327,35 @@ class AccountStore:
             return None
         path = self._accounts_dir / account_id / "auth.json"
         return path if path.exists() else None
+
+    def get_profile_path(self, account_id: str) -> Path | None:
+        """获取指定账号的持久化浏览器 Profile 路径。"""
+        registry = self._load_registry()
+        if account_id not in registry.accounts:
+            return None
+        account_dir = self._accounts_dir / account_id
+        if not account_dir.is_dir():
+            return None
+        profile_dir = account_dir / "profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        return profile_dir
+
+    def _reset_profile_seed(self, account_dir: Path) -> None:
+        profile_dir = account_dir / "profile"
+        marker = profile_dir / ".aistudio_storage_seed"
+        if profile_dir.exists():
+            if profile_dir.is_dir():
+                try:
+                    self._remove_account_dir(profile_dir)
+                except OSError as exc:
+                    try:
+                        marker.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    logger.warning("清理账号 profile 失败，将复用现有目录: %s", exc)
+            else:
+                try:
+                    profile_dir.unlink()
+                except OSError as exc:
+                    raise OSError(f"profile 路径不是目录且无法删除: {profile_dir}") from exc
+        profile_dir.mkdir(parents=True, exist_ok=True)

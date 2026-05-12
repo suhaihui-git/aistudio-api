@@ -6,6 +6,7 @@ services:
     shm_size: "1gb"
     ports:
       - "8080:8080"
+      - "${AISTUDIO_LOGIN_NOVNC_BIND:-127.0.0.1:6080}:6080"  # noVNC login desktop
       # - "9222:9222"  # Optional: expose only when debugging Camoufox
     volumes:
       - ./data:/app/data           # Account data persistence
@@ -14,10 +15,16 @@ services:
       - AISTUDIO_PORT=8080
       - AISTUDIO_CAMOUFOX_PORT=9222
       - AISTUDIO_CAMOUFOX_HEADLESS=1
+      - AISTUDIO_ENABLE_LOGIN_DESKTOP=1
+      - AISTUDIO_LOGIN_NOVNC_PORT=6080
+      - AISTUDIO_LOGIN_NOVNC_BIND=${AISTUDIO_LOGIN_NOVNC_BIND:-127.0.0.1:6080}
+      - AISTUDIO_LOGIN_NOVNC_URL=${AISTUDIO_LOGIN_NOVNC_URL:-http://localhost:6080/vnc.html}
+      - AISTUDIO_LOGIN_VNC_PASSWORD=${AISTUDIO_LOGIN_VNC_PASSWORD:-}
       - AISTUDIO_ACCOUNTS_DIR=/app/data/accounts
       - AISTUDIO_API_KEYS_FILE=/app/data/api_keys.json
       - AISTUDIO_ADMIN_PASSWORD=${AISTUDIO_ADMIN_PASSWORD:?set AISTUDIO_ADMIN_PASSWORD in .env}
       - AISTUDIO_ADMIN_SESSION_SECRET=${AISTUDIO_ADMIN_SESSION_SECRET:-}
+      - AISTUDIO_ACCOUNT_OPERATION_TIMEOUT=${AISTUDIO_ACCOUNT_OPERATION_TIMEOUT:-30}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s

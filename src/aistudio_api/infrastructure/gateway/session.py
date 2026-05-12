@@ -149,6 +149,7 @@ class BrowserSession:
     def __init__(self, port: int):
         self.port = port
         self._auth_file = settings.auth_file
+        self._profile_dir: str | None = None
         self._hook_page = None
         self._ctx = None
         self._browser = None
@@ -163,14 +164,24 @@ class BrowserSession:
     def auth_file(self) -> str | None:
         return self._auth_file
 
+    @property
+    def profile_dir(self) -> str | None:
+        return self._profile_dir
+
     async def ensure_context(self):
         return await self._run_sync(self._ensure_browser_sync)
 
     async def get_cookies(self) -> list[dict[str, Any]]:
         return await self._run_sync(self._get_cookies_sync)
 
-    async def switch_auth(self, auth_file: str | None) -> None:
-        await self._run_sync(self._switch_auth_sync, auth_file)
+    async def switch_auth(self, auth_file: str | None, profile_dir: str | None = None) -> None:
+        await self._run_sync(self._switch_auth_sync, auth_file, profile_dir)
+
+    async def reset_context(self) -> None:
+        await self._run_sync(self._reset_context_sync)
+
+    async def sync_storage_state(self) -> None:
+        await self._run_sync(self._sync_storage_state_sync)
 
     async def ensure_hook_page(self):
         await self._run_sync(self._ensure_hook_page_sync)
@@ -449,11 +460,17 @@ class BrowserSession:
         url, headers = self._get_captured_info()
         return page, url, headers
 
-    def _switch_auth_sync(self, auth_file: str | None) -> None:
+    def _switch_auth_sync(self, auth_file: str | None, profile_dir: str | None = None) -> None:
         auth_file = str(Path(auth_file).resolve()) if auth_file else None
-        if self._auth_file == auth_file:
+        profile_dir = str(Path(profile_dir).resolve()) if profile_dir else None
+        if self._auth_file == auth_file and self._profile_dir == profile_dir:
             return
+        self._close_sync()
         self._auth_file = auth_file
+        self._profile_dir = profile_dir
+        self._templates.clear()
+
+    def _reset_context_sync(self) -> None:
         self._templates.clear()
         self._close_sync()
 
@@ -468,13 +485,27 @@ class BrowserSession:
         self._close_sync()
         from aistudio_api.config import build_camoufox_proxy
 
+        launch_kwargs = {
+            "headless": settings.camoufox_headless,
+            "main_world_eval": True,
+            "proxy": build_camoufox_proxy(settings.proxy_url),
+        }
+        if self._profile_dir:
+            Path(self._profile_dir).mkdir(parents=True, exist_ok=True)
+            launch_kwargs["persistent_context"] = True
+            launch_kwargs["user_data_dir"] = self._profile_dir
+
         self._cf = Camoufox(
-            headless=settings.camoufox_headless,
-            main_world_eval=True,
-            proxy=build_camoufox_proxy(settings.proxy_url),
+            **launch_kwargs,
         )
-        self._browser = self._cf.__enter__()
-        self._ctx = self._new_context_sync()
+        browser_or_context = self._cf.__enter__()
+        if self._profile_dir:
+            self._browser = None
+            self._ctx = browser_or_context
+            self._seed_persistent_context_sync(self._ctx)
+        else:
+            self._browser = browser_or_context
+            self._ctx = self._new_context_sync()
         self._hook_page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         log.debug(f"[timing] browser launched in {_t.time()-_t0:.1f}s")
         self._goto_aistudio_sync(self._hook_page)
@@ -497,11 +528,71 @@ class BrowserSession:
                 return ctx
         return self._browser.new_context()
 
+    def _seed_persistent_context_sync(self, ctx) -> None:
+        if not self._auth_file or not Path(self._auth_file).exists() or not self._profile_dir:
+            return
+        profile_dir = Path(self._profile_dir)
+        marker = profile_dir / ".aistudio_storage_seed"
+        if marker.exists():
+            return
+        self._apply_storage_state_sync(ctx, self._auth_file)
+        marker.write_text(
+            json.dumps(
+                {
+                    "auth_file": str(Path(self._auth_file).resolve()),
+                    "seeded_at": int(time.time()),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
     def _apply_storage_state_sync(self, ctx, auth_file: str) -> None:
-        data = json.loads(Path(auth_file).read_text())
+        data = json.loads(Path(auth_file).read_text(encoding="utf-8"))
         cookies = data.get("cookies") or []
         if cookies:
             ctx.add_cookies(cookies)
+        origins = data.get("origins") or []
+        if origins:
+            self._restore_origins_sync(ctx, origins)
+
+    def _restore_origins_sync(self, ctx, origins: list) -> None:
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        original_url = page.url if page.url and page.url != "about:blank" else None
+        for origin in origins:
+            origin_url = origin.get("origin") if isinstance(origin, dict) else None
+            local_storage = origin.get("localStorage") if isinstance(origin, dict) else None
+            if not origin_url or not isinstance(local_storage, list):
+                continue
+            try:
+                page.goto(origin_url, wait_until="domcontentloaded", timeout=15000)
+                for item in local_storage:
+                    if not isinstance(item, dict) or "name" not in item or "value" not in item:
+                        continue
+                    page.evaluate(
+                        "(item) => localStorage.setItem(item.name, item.value)",
+                        {"name": item["name"], "value": item["value"]},
+                    )
+            except Exception as exc:
+                log.debug("restore localStorage failed for %s: %s", origin_url, exc)
+        if original_url:
+            try:
+                page.goto(original_url, wait_until="domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+
+    def _sync_storage_state_sync(self) -> None:
+        if self._ctx is None or not self._auth_file:
+            return
+        try:
+            state = self._ctx.storage_state()
+            Path(self._auth_file).write_text(
+                json.dumps(state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            log.debug("storage state synced to %s", self._auth_file)
+        except Exception as exc:
+            log.debug("storage state sync skipped: %s", exc)
 
     def _ensure_hook_page_sync(self):
         self._ensure_browser_sync()
@@ -962,7 +1053,8 @@ mw:((hash) => {
         raise RuntimeError("page never became idle")
 
     def _close_sync(self) -> None:
-        if self._ctx is not None:
+        self._sync_storage_state_sync()
+        if self._ctx is not None and not self._profile_dir:
             try:
                 self._ctx.close()
             except Exception:

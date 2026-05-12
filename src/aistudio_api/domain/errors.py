@@ -39,7 +39,21 @@ class RequestError(AistudioError):
         super().__init__(f"HTTP {status}: {message}")
 
 
+AUTH_ERROR_MARKERS = (
+    "Request had invalid authentication credentials",
+    "Expected OAuth 2 access token",
+    "login cookie or other valid authentication credential",
+    "CREDENTIALS_MISSING",
+)
+
+
+def is_auth_error_body(body: str) -> bool:
+    return any(marker in body for marker in AUTH_ERROR_MARKERS)
+
+
 def classify_error(status: int, body: str) -> AistudioError:
+    if is_auth_error_body(body):
+        return AuthError(f"认证失败: {body[:200]}")
     if status == 429:
         return UsageLimitExceeded(f"配额用完: {body[:200]}")
     if status == 401:

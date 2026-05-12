@@ -37,6 +37,9 @@ class RequestCaptureService:
         self._snapshot_cache = snapshot_cache
         self._templates: dict[str, CapturedRequest] = {}
 
+    def clear_templates(self) -> None:
+        self._templates.clear()
+
     async def capture(
         self,
         prompt: str,

@@ -39,7 +39,9 @@ async def lifespan(app: FastAPI):
     )
     runtime_state.client = client
     from aistudio_api.config import settings as app_settings
-    runtime_state.busy_lock = asyncio.Semaphore(app_settings.max_concurrency)
+    runtime_state.max_concurrency = max(1, app_settings.max_concurrency)
+    runtime_state.busy_lock = asyncio.Semaphore(runtime_state.max_concurrency)
+    runtime_state.state_lock = asyncio.Lock()
 
     # 注入 snapshot 缓存引用，切号时需要清除
     from aistudio_api.infrastructure.gateway.client import _snapshot_cache
@@ -91,6 +93,7 @@ async def lifespan(app: FastAPI):
         warmup_task.cancel()
     runtime_state.client = None
     runtime_state.busy_lock = None
+    runtime_state.state_lock = None
     runtime_state.account_service = None
     runtime_state.rotator = None
 

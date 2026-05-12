@@ -25,12 +25,12 @@ from aistudio_api.api.responses import (
     to_openai_tool_calls,
 )
 from aistudio_api.api.schemas import ChatRequest, GeminiGenerateContentRequest, ImageRequest
-from aistudio_api.api.state import runtime_state
+from aistudio_api.api.state import ExclusiveSlotTimeout, runtime_state
 
 logger = logging.getLogger("aistudio.server")
 
 
-async def _try_switch_account() -> bool:
+async def _try_switch_account(*, exclusive: bool = True) -> bool:
     """尝试切换到下一个可用账号。返回是否成功切换。"""
     rotator = runtime_state.rotator
     if rotator is None:
@@ -43,18 +43,30 @@ async def _try_switch_account() -> bool:
 
     account_service = runtime_state.account_service
     client = runtime_state.client
+    browser_session = client._session if client else None
 
-    if not all([account_service, client]):
+    if not all([account_service, browser_session]):
         return False
 
-    # 切换账号时清掉 snapshot，避免复用旧页面态。
-    result = await account_service.activate_account(
-        next_account.id,
-        client._session,
-        runtime_state.snapshot_cache,
-        None,  # skip lock — caller already holds it
-        keep_snapshot_cache=False,
-    )
+    async def _activate():
+        # 切换账号时清掉 snapshot，避免复用旧页面态。
+        return await account_service.activate_account(
+            next_account.id,
+            browser_session,
+            runtime_state.snapshot_cache,
+            None,
+            keep_snapshot_cache=False,
+        )
+
+    if exclusive:
+        try:
+            async with runtime_state.exclusive_slot():
+                result = await _activate()
+        except ExclusiveSlotTimeout:
+            logger.warning("账号切换等待超时，当前仍有请求运行")
+            return False
+    else:
+        result = await _activate()
     return result is not None
 
 
@@ -75,12 +87,21 @@ async def _ensure_active_account_loaded() -> bool:
     if account is not None:
         return True
 
-    return await _try_switch_account()
+    return await _try_switch_account(exclusive=False)
 
 
 def health_response() -> dict:
     busy_lock = runtime_state.busy_lock
     return {"status": "ok", "busy": busy_lock.locked() if busy_lock else False}
+
+
+def _server_is_busy() -> bool:
+    busy_lock = runtime_state.busy_lock
+    state_lock = runtime_state.state_lock
+    return bool(
+        (busy_lock is not None and busy_lock.locked())
+        or (state_lock is not None and state_lock.locked())
+    )
 
 
 def stats_response() -> dict:
@@ -101,14 +122,23 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
     busy_lock = runtime_state.busy_lock
     if busy_lock is None:
         raise HTTPException(503, detail={"message": "Server not ready", "type": "service_unavailable"})
-    if busy_lock.locked():
+    if _server_is_busy():
         raise HTTPException(429, detail={"message": "Server is busy", "type": "rate_limit_exceeded"})
 
     max_retries = 3  # 最多重试次数
     last_error = None
+    should_switch_account = False
 
     for attempt in range(max_retries):
-        async with busy_lock:
+        if should_switch_account:
+            if await _try_switch_account(exclusive=True):
+                logger.info("429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
+                should_switch_account = False
+            else:
+                logger.warning("429 限流，无法切换账号")
+                raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
+
+        async with runtime_state.request_slot():
             # 首次尝试时，确保活跃账号已经加载到浏览器会话。
             if attempt == 0:
                 await _ensure_active_account_loaded()
@@ -197,13 +227,8 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                     if account:
                         rotator.record_rate_limited(account.id)
 
-                # 尝试切换账号
-                if await _try_switch_account():
-                    logger.info("429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
-                    continue
-                else:
-                    logger.warning("429 限流，无法切换账号")
-                    raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+                should_switch_account = True
+                continue
             except AistudioError as exc:
                 runtime_state.record(model, "errors")
                 rotator = runtime_state.rotator
@@ -228,14 +253,23 @@ async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
     busy_lock = runtime_state.busy_lock
     if busy_lock is None:
         raise HTTPException(503, detail={"message": "Server not ready", "type": "service_unavailable"})
-    if busy_lock.locked():
+    if _server_is_busy():
         raise HTTPException(429, detail={"message": "Server is busy", "type": "rate_limit_exceeded"})
 
     max_retries = 3
     last_error = None
+    should_switch_account = False
 
     for attempt in range(max_retries):
-        async with busy_lock:
+        if should_switch_account:
+            if await _try_switch_account(exclusive=True):
+                logger.info("Image 429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
+                should_switch_account = False
+            else:
+                logger.warning("Image 429 限流，无法切换账号")
+                raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
+
+        async with runtime_state.request_slot():
             if attempt == 0:
                 await _ensure_active_account_loaded()
             try:
@@ -267,13 +301,8 @@ async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
                     if account:
                         rotator.record_rate_limited(account.id)
 
-                # 尝试切换账号
-                if await _try_switch_account():
-                    logger.info("Image 429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
-                    continue
-                else:
-                    logger.warning("Image 429 限流，无法切换账号")
-                    raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+                should_switch_account = True
+                continue
             except AistudioError as exc:
                 runtime_state.record(req.model, "errors")
                 rotator = runtime_state.rotator
@@ -314,7 +343,7 @@ def _build_streaming_response(
             cleanup_files(cleanup_paths)
             return
 
-        async with busy_lock:
+        async with runtime_state.request_slot():
             try:
                 await _ensure_active_account_loaded()
                 chat_id = new_chat_id()
@@ -357,14 +386,14 @@ def _build_streaming_response(
                         break
                     except RequestError as exc:
                         if exc.status == 204 and stream_attempt == 0:
-                            logger.warning("Stream 收到 204，清理 snapshot 缓存后重试一次")
-                            client.clear_snapshot_cache()
+                            logger.warning("Stream 收到 204，清理旧状态后重试一次")
+                            await client.reset_auth_state()
                             continue
                         raise
                     except AuthError as exc:
                         if stream_attempt == 0:
-                            logger.warning("Stream 鉴权异常，清理 snapshot 缓存后重试一次: %s", exc)
-                            client.clear_snapshot_cache()
+                            logger.warning("Stream 鉴权异常，清理旧状态后重试一次: %s", exc)
+                            await client.reset_auth_state()
                             continue
                         raise
 
@@ -397,14 +426,23 @@ async def handle_gemini_generate_content(
     busy_lock = runtime_state.busy_lock
     if busy_lock is None:
         raise HTTPException(503, detail={"message": "Server not ready", "type": "service_unavailable"})
-    if busy_lock.locked():
+    if _server_is_busy():
         raise HTTPException(429, detail={"message": "Server is busy", "type": "rate_limit_exceeded"})
 
     max_retries = 3
     last_error = None
+    should_switch_account = False
 
     for attempt in range(max_retries):
-        async with busy_lock:
+        if should_switch_account:
+            if await _try_switch_account(exclusive=True):
+                logger.info("Gemini 429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
+                should_switch_account = False
+            else:
+                logger.warning("Gemini 429 限流，无法切换账号")
+                raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
+
+        async with runtime_state.request_slot():
             if attempt == 0:
                 await _ensure_active_account_loaded()
             normalized = None
@@ -474,13 +512,8 @@ async def handle_gemini_generate_content(
                     if account:
                         rotator.record_rate_limited(account.id)
 
-                # 尝试切换账号
-                if await _try_switch_account():
-                    logger.info("Gemini 429 限流，已切换账号，重试 %d/%d", attempt + 1, max_retries)
-                    continue
-                else:
-                    logger.warning("Gemini 429 限流，无法切换账号")
-                    raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+                should_switch_account = True
+                continue
             except AistudioError as exc:
                 runtime_state.record(model_path, "errors")
                 rotator = runtime_state.rotator
@@ -508,7 +541,7 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
             cleanup_files(normalized["cleanup_paths"])
             return
 
-        async with busy_lock:
+        async with runtime_state.request_slot():
             try:
                 await _ensure_active_account_loaded()
                 final_usage = None
@@ -561,14 +594,14 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                         break
                     except RequestError as exc:
                         if exc.status == 204 and stream_attempt == 0:
-                            logger.warning("Gemini stream 收到 204，清理 snapshot 缓存后重试一次")
-                            client.clear_snapshot_cache()
+                            logger.warning("Gemini stream 收到 204，清理旧状态后重试一次")
+                            await client.reset_auth_state()
                             continue
                         raise
                     except AuthError as exc:
                         if stream_attempt == 0:
-                            logger.warning("Gemini stream 鉴权异常，清理 snapshot 缓存后重试一次: %s", exc)
-                            client.clear_snapshot_cache()
+                            logger.warning("Gemini stream 鉴权异常，清理旧状态后重试一次: %s", exc)
+                            await client.reset_auth_state()
                             continue
                         raise
 

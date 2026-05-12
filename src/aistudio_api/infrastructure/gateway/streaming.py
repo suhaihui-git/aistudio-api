@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from aistudio_api.config import settings
-from aistudio_api.domain.errors import RequestError, classify_error
+from aistudio_api.domain.errors import RequestError, classify_error, is_auth_error_body
 from aistudio_api.domain.models import parse_chunk_usage
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest
 from aistudio_api.infrastructure.gateway.request_rewriter import modify_body
@@ -237,6 +237,9 @@ class StreamingGateway:
             if detail:
                 raise RequestError(status_code, detail)
             raise RequestError(status_code, "")
+
+        if is_auth_error_body(raw_response):
+            raise classify_error(status_code, raw_response)
 
         if replay_mode == "http_fallback":
             logger.info("HTTP 流式回退成功: chunks=%s chars", len(raw_response))

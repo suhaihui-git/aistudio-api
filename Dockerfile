@@ -43,6 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-wqy-zenhei \
     # Utilities
     curl \
+    xvfb \
+    x11vnc \
+    novnc \
+    websockify \
     # Cleanup
     && rm -rf /var/lib/apt/lists/*
 
@@ -65,21 +69,24 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Copy application code
 COPY src/ src/
 COPY main.py .
+COPY docker/entrypoint.sh /entrypoint.sh
 
 # Create necessary directories
 RUN mkdir -p /app/data /tmp
 
-# Set permissions
-RUN chmod +x /app/main.py
+# Set permissions. Normalize shell script line endings for Windows checkouts.
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /app/main.py /entrypoint.sh
 
 # Expose ports
 # 8080: API server
 # 9222: Camoufox debug port
-EXPOSE 8080 9222
+# 6080: optional noVNC login desktop
+EXPOSE 8080 9222 6080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # Default command
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python3", "main.py", "server", "--port", "8080", "--camoufox-port", "9222"]

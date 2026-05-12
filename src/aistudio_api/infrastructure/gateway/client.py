@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from aistudio_api.config import DEFAULT_CAMOUFOX_PORT, DEFAULT_IMAGE_MODEL, DEFAULT_TEXT_MODEL, settings
-from aistudio_api.domain.errors import RequestError, classify_error
+from aistudio_api.domain.errors import AuthError, RequestError, classify_error, is_auth_error_body
 from aistudio_api.domain.models import ModelOutput, parse_image_output, parse_text_output
 from aistudio_api.infrastructure.cache.snapshot_cache import SnapshotCache
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest, RequestCaptureService
@@ -50,14 +50,28 @@ class AIStudioClient:
             await self._session.ensure_context()
             logger.info("浏览器预热完成")
 
-    async def switch_auth(self, auth_file: str | None) -> None:
+    async def switch_auth(self, auth_file: str | None, profile_dir: str | None = None) -> None:
         """切换账号的 auth 文件。"""
         if self._session is not None:
-            await self._session.switch_auth(auth_file)
+            await self._session.switch_auth(auth_file, profile_dir=profile_dir)
 
     def clear_snapshot_cache(self) -> None:
         """清除 snapshot 缓存。"""
         _snapshot_cache.clear()
+
+    async def reset_auth_state(self) -> None:
+        """Clear cached request state and rebuild browser context on next use."""
+        self.clear_snapshot_cache()
+        clear_templates = getattr(self._capture_service, "clear_templates", None)
+        if clear_templates is not None:
+            clear_templates()
+        if self._session is not None:
+            await self._session.reset_context()
+
+    async def sync_storage_state(self) -> None:
+        """Persist the current browser storage state to the active auth file."""
+        if self._session is not None:
+            await self._session.sync_storage_state()
 
     def _dump_raw_exchange(
         self,
@@ -232,37 +246,60 @@ class AIStudioClient:
         sanitize_plain_text: bool = True,
     ) -> ModelOutput:
         logger.info("拦截请求: %r", f"{capture_prompt[:20]}...")
-        captured = await self.capture_request(capture_prompt, model=model, images=capture_images, contents=contents)
-        if not captured:
-            raise RequestError(0, "无法拦截请求")
-
-        modified_body = modify_body(
-            captured.body,
-            model=model,
-            contents=contents,
-            system_instruction_content=system_instruction_content,
-            tools=tools,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            max_tokens=max_tokens,
-            generation_config_overrides=generation_config_overrides,
-            sanitize_plain_text=sanitize_plain_text,
-        )
-
+        force_refresh = False
         timeout = completion_timeout_seconds(max_tokens=max_tokens, base_seconds=settings.timeout_replay)
-        status, raw = await self._replay_service.replay(captured, body=modified_body, timeout=timeout)
-        raw_text = raw.decode("utf-8", errors="replace")
-        self._dump_raw_exchange(
-            kind="generate_content",
-            model=model,
-            capture_prompt=capture_prompt,
-            modified_body=modified_body,
-            raw_response=raw_text,
-        )
-        if status != 200:
-            raise classify_error(status, raw_text)
-        output = parse_text_output(raw_text)
+        for attempt in range(2):
+            captured = await self.capture_request(
+                capture_prompt,
+                model=model,
+                images=capture_images,
+                contents=contents,
+                force_refresh=force_refresh,
+            )
+            if not captured:
+                raise RequestError(0, "无法拦截请求")
+
+            modified_body = modify_body(
+                captured.body,
+                model=model,
+                contents=contents,
+                system_instruction_content=system_instruction_content,
+                tools=tools,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_tokens=max_tokens,
+                generation_config_overrides=generation_config_overrides,
+                sanitize_plain_text=sanitize_plain_text,
+            )
+
+            status, raw = await self._replay_service.replay(captured, body=modified_body, timeout=timeout)
+            raw_text = raw.decode("utf-8", errors="replace")
+            self._dump_raw_exchange(
+                kind="generate_content",
+                model=model,
+                capture_prompt=capture_prompt,
+                modified_body=modified_body,
+                raw_response=raw_text,
+            )
+            if status == 200:
+                if is_auth_error_body(raw_text) and attempt == 0:
+                    logger.warning("响应体提示认证异常，清理旧状态后重试一次")
+                    await self.reset_auth_state()
+                    force_refresh = True
+                    continue
+                output = parse_text_output(raw_text)
+                break
+
+            error = classify_error(status, raw_text)
+            if isinstance(error, AuthError) and attempt == 0:
+                logger.warning("认证异常，清理旧状态后重试一次: %s", error)
+                await self.reset_auth_state()
+                force_refresh = True
+                continue
+            raise error
+        else:
+            raise RequestError(0, "请求失败")
         output.model = model
         return output
 

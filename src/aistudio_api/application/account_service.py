@@ -52,6 +52,11 @@ class AccountService:
         path = self._store.get_active_auth_path()
         return str(path) if path is not None else None
 
+    def get_active_profile_path(self) -> str | None:
+        """获取当前活跃账号的持久化浏览器 Profile 路径。"""
+        path = self._store.get_active_profile_path()
+        return str(path) if path is not None else None
+
     async def ensure_active_loaded(
         self,
         browser_session: Any,
@@ -69,17 +74,20 @@ class AccountService:
             logger.error("活跃账号 %s 的 auth.json 不存在", account.id)
             return None
 
+        profile_path = self._store.get_profile_path(account.id)
         target_auth = str(auth_path.resolve())
+        target_profile = str(profile_path.resolve()) if profile_path is not None else None
         current_auth = getattr(browser_session, "auth_file", None)
-        if current_auth == target_auth:
+        current_profile = getattr(browser_session, "profile_dir", None)
+        if current_auth == target_auth and current_profile == target_profile:
             return account
 
         self._log_cookie_health(auth_path, account.id)
-        await browser_session.switch_auth(target_auth)
+        await browser_session.switch_auth(target_auth, profile_dir=target_profile)
         if not keep_snapshot_cache and snapshot_cache is not None:
             snapshot_cache.clear()
             logger.info("已清除 snapshot 缓存")
-        logger.info("已加载活跃账号: %s (%s)", account.id, account.name)
+        logger.info("已加载活跃账号: %s (%s), profile=%s", account.id, account.name, target_profile or "none")
         return account
 
     def _log_cookie_health(self, auth_path: Any, account_id: str) -> None:
@@ -142,14 +150,16 @@ class AccountService:
             return None
 
         async def _do_switch():
-            # 获取 auth 路径
             auth_path = self._store.get_auth_path(account_id)
             if auth_path is None:
                 logger.error("账号 %s 的 auth.json 不存在", account_id)
                 return None
+            profile_path = self._store.get_profile_path(account_id)
 
-            # 切换 BrowserSession 的 auth
-            await browser_session.switch_auth(str(auth_path))
+            await browser_session.switch_auth(
+                str(auth_path),
+                profile_dir=str(profile_path) if profile_path is not None else None,
+            )
 
             # 切号后默认清理 snapshot，避免旧页面态和新账号 cookies 混用。
             if not keep_snapshot_cache and snapshot_cache is not None:
@@ -181,6 +191,7 @@ class AccountService:
         """导出单个账号及其 storage state。"""
         account = self._store.get_account(account_id)
         auth_path = self._store.get_auth_path(account_id)
+        profile_path = self._store.get_profile_path(account_id)
         if account is None or auth_path is None:
             return None
 
@@ -190,6 +201,9 @@ class AccountService:
             "type": "aistudio-api-account",
             "account": account.to_dict(),
             "storage_state": storage_state,
+            "profile": {
+                "persistent": profile_path is not None and profile_path.exists(),
+            },
         }
 
     def import_account_package(

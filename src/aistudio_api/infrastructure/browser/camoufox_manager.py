@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import importlib.util
+import selectors
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,6 +19,15 @@ logger = logging.getLogger("aistudio.camoufox")
 LAUNCHER_PATH = Path(__file__).with_name("camoufox_launcher.py")
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 SRC_ROOT = PROJECT_ROOT / "src"
+
+
+def _is_headed_linux_without_display(headless: bool) -> bool:
+    return (
+        not headless
+        and sys.platform.startswith("linux")
+        and not os.getenv("DISPLAY")
+        and not os.getenv("WAYLAND_DISPLAY")
+    )
 
 
 class CamoufoxManager:
@@ -40,6 +50,18 @@ class CamoufoxManager:
     async def start(self) -> str:
         if self._ws_endpoint:
             return self._ws_endpoint
+
+        if _is_headed_linux_without_display(self.headless):
+            if os.getenv("AISTUDIO_ENABLE_LOGIN_DESKTOP") == "1":
+                raise RuntimeError(
+                    "无法启动有头登录浏览器：已启用 AISTUDIO_ENABLE_LOGIN_DESKTOP=1，"
+                    "但当前进程没有 DISPLAY。请确认通过 Docker entrypoint 启动，"
+                    "或手动启动 Xvfb/VNC 后再运行服务。"
+                )
+            raise RuntimeError(
+                "无法启动有头登录浏览器：当前 Linux 环境没有 DISPLAY/WAYLAND_DISPLAY。"
+                "服务器或 Docker 部署请启用内置 noVNC 登录桌面，或配置 VNC/Xvfb 后再使用浏览器登录。"
+            )
 
         try:
             import urllib.request
@@ -78,40 +100,42 @@ class CamoufoxManager:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
 
-        for _ in range(30):
-            time.sleep(1)
-            if self._process and self._process.poll() is not None:
-                output = ""
-                if self._process.stdout:
-                    try:
-                        output = self._process.stdout.read()
-                    except Exception:
-                        output = ""
-                hint = self._build_failure_hint(output)
-                raise RuntimeError(
-                    "Camoufox exited before startup. "
-                    f"Command: {' '.join(cmd)}. "
-                    f"Output: {output.strip() or '<no output>'}. "
-                    f"{hint}"
-                )
-            try:
-                import urllib.request
+        output_parts: list[str] = []
+        selector = selectors.DefaultSelector() if os.name != "nt" else None
+        if selector is not None and self._process.stdout:
+            selector.register(self._process.stdout, selectors.EVENT_READ)
 
-                resp = urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json", timeout=2)
-                data = json.loads(resp.read())
-                if "wsEndpointPath" in data:
-                    self._ws_endpoint = f"ws://127.0.0.1:{self.port}{data['wsEndpointPath']}"
-                    logger.info("Camoufox started: %s", self._ws_endpoint)
-                    return self._ws_endpoint
-            except Exception:
-                continue
+        try:
+            for _ in range(30):
+                output_parts.extend(self._drain_output(selector))
+                time.sleep(1)
+                if self._process and self._process.poll() is not None:
+                    output_parts.extend(self._drain_output(selector))
+                    output = "".join(output_parts)
+                    hint = self._build_failure_hint(output)
+                    raise RuntimeError(
+                        "Camoufox exited before startup. "
+                        f"Command: {' '.join(cmd)}. "
+                        f"Output: {output.strip() or '<no output>'}. "
+                        f"{hint}"
+                    )
+                try:
+                    import urllib.request
 
-        output = ""
-        if self._process and self._process.stdout:
-            try:
-                output = self._process.stdout.read()
-            except Exception:
-                output = ""
+                    resp = urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json", timeout=2)
+                    data = json.loads(resp.read())
+                    if "wsEndpointPath" in data:
+                        self._ws_endpoint = f"ws://127.0.0.1:{self.port}{data['wsEndpointPath']}"
+                        logger.info("Camoufox started: %s", self._ws_endpoint)
+                        return self._ws_endpoint
+                except Exception:
+                    continue
+        finally:
+            if selector is not None:
+                selector.close()
+
+        output = "".join(output_parts)
+        self._terminate_process()
         hint = self._build_failure_hint(output)
         raise RuntimeError(
             "Camoufox failed to start within 30s. "
@@ -119,6 +143,29 @@ class CamoufoxManager:
             f"Output: {output.strip() or '<no output>'}. "
             f"{hint}"
         )
+
+    def _drain_output(self, selector) -> list[str]:
+        if selector is None:
+            return []
+        chunks: list[str] = []
+        for key, _ in selector.select(timeout=0):
+            try:
+                line = key.fileobj.readline()
+            except Exception:
+                continue
+            if line:
+                chunks.append(line)
+        return chunks
+
+    def _terminate_process(self) -> None:
+        if not self._process or self._process.poll() is not None:
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait(timeout=5)
 
     def _build_failure_hint(self, output: str) -> str:
         if settings.camoufox_python:
@@ -199,7 +246,7 @@ class CamoufoxManager:
         if self._playwright:
             await self._playwright.stop()
         if self._process:
-            self._process.terminate()
+            self._terminate_process()
         self._ws_endpoint = None
         self._browser = None
         self._page = None

@@ -292,7 +292,49 @@ function app() {
         await this.loadRotation();
       } catch (err) { this.showToast(err.message || '导入失败') }
     },
-    async addAccount() { try { const r = await fetch('/accounts/login/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); this.showToast(r.ok ? '登录已开始！' : '启动登录失败') } catch (e) { this.showToast('网络错误') } },
+    async addAccount() {
+      try {
+        const r = await fetch('/accounts/login/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.detail?.message || d.detail || '启动登录失败');
+        if (d.browser_url) {
+          window.open(d.browser_url, '_blank', 'noopener,noreferrer');
+          this.showToast('登录已开始，请在远程浏览器中完成登录');
+        } else {
+          this.showToast('登录已开始');
+        }
+        this.pollLoginStatus(d.session_id);
+      } catch (e) { this.showToast(e.message || '网络错误') }
+    },
+    async pollLoginStatus(sessionId) {
+      if (!sessionId) return;
+      for (let i = 0; i < 60; i++) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        try {
+          const r = await fetch(`/accounts/login/status/${sessionId}`);
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || '查询登录状态失败');
+          if (d.status === 'completed') {
+            this.showToast(`账号登录成功${d.email ? ': ' + d.email : ''}`);
+            this.loadAccounts();
+            this.loadRotation();
+            return;
+          }
+          if (d.status === 'failed') {
+            this.showToast(d.error || '登录失败');
+            return;
+          }
+        } catch (e) {
+          this.showToast(e.message || '查询登录状态失败');
+          return;
+        }
+      }
+      this.showToast('登录仍在等待，请稍后刷新账号列表');
+    },
     async importCookies() {
       const raw = this.cookieModal.cookies.trim();
       if (!raw) { this.showToast('请输入 Cookie'); return }

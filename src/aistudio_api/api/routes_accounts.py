@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from aistudio_api.api.dependencies import get_account_service, get_runtime_state, require_admin
+from aistudio_api.api.state import ExclusiveSlotTimeout
 from aistudio_api.infrastructure.account.cookie_parser import parse_cookie_string
 
 router = APIRouter(prefix="/accounts", dependencies=[Depends(require_admin)])
@@ -20,6 +21,7 @@ class LoginStartRequest(BaseModel):
 
 class LoginStartResponse(BaseModel):
     session_id: str
+    browser_url: str | None = None
 
 
 class AccountResponse(BaseModel):
@@ -36,6 +38,7 @@ class LoginStatusResponse(BaseModel):
     account_id: str | None = None
     email: str | None = None
     error: str | None = None
+    browser_url: str | None = None
 
 
 class UpdateAccountRequest(BaseModel):
@@ -75,6 +78,10 @@ def _safe_filename_part(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "account"
 
 
+def _account_busy_error() -> HTTPException:
+    return HTTPException(status_code=409, detail="当前有请求运行，请稍后重试")
+
+
 @router.post("/login/start", response_model=LoginStartResponse)
 async def login_start(
     req: LoginStartRequest,
@@ -82,7 +89,11 @@ async def login_start(
 ):
     """启动 Google 登录流程。"""
     session_id = await account_service.start_login(req.name)
-    return LoginStartResponse(session_id=session_id)
+    session = account_service.get_login_status(session_id)
+    return LoginStartResponse(
+        session_id=session_id,
+        browser_url=session.browser_url if session is not None else None,
+    )
 
 
 @router.get("/login/status/{session_id}", response_model=LoginStatusResponse)
@@ -100,6 +111,7 @@ async def login_status(
         account_id=session.account_id,
         email=session.email,
         error=session.error,
+        browser_url=session.browser_url,
     )
 
 
@@ -148,14 +160,16 @@ async def activate_account(
     # 从 runtime_state 获取 browser_session, snapshot_cache, busy_lock
     browser_session = runtime_state.client._session if runtime_state.client else None
     snapshot_cache = runtime_state.snapshot_cache
-    busy_lock = runtime_state.busy_lock
-
     if browser_session is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
-    account = await account_service.activate_account(
-        account_id, browser_session, snapshot_cache, busy_lock
-    )
+    try:
+        async with runtime_state.exclusive_slot():
+            account = await account_service.activate_account(
+                account_id, browser_session, snapshot_cache, None
+            )
+    except ExclusiveSlotTimeout as exc:
+        raise _account_busy_error() from exc
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在或切换失败")
     return AccountResponse(
@@ -171,9 +185,19 @@ async def activate_account(
 async def export_account(
     account_id: str,
     account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
 ):
     """导出单个账号。"""
-    payload = account_service.export_account(account_id)
+    try:
+        async with runtime_state.exclusive_slot():
+            active = account_service.get_active_account()
+            client = runtime_state.client
+            if active and active.id == account_id and client is not None:
+                await client.sync_storage_state()
+            payload = account_service.export_account(account_id)
+    except ExclusiveSlotTimeout as exc:
+        raise _account_busy_error() from exc
+
     if payload is None:
         raise HTTPException(status_code=404, detail="账号不存在或 auth.json 缺失")
 
@@ -192,6 +216,12 @@ async def delete_account(
     """删除账号。"""
     async def _delete():
         active = account_service.get_active_account()
+        client = runtime_state.client
+        if active and active.id == account_id and client and client._session:
+            await client._session.switch_auth(None)
+            if runtime_state.snapshot_cache is not None:
+                runtime_state.snapshot_cache.clear()
+
         success = account_service.delete_account(account_id)
         if not success:
             raise HTTPException(status_code=404, detail="账号不存在")
@@ -199,19 +229,13 @@ async def delete_account(
         rotator = runtime_state.rotator
         if rotator:
             rotator.remove_account(account_id)
-
-        client = runtime_state.client
-        if active and active.id == account_id and client and client._session:
-            await client._session.switch_auth(None)
-            if runtime_state.snapshot_cache is not None:
-                runtime_state.snapshot_cache.clear()
         return {"ok": True}
 
-    busy_lock = runtime_state.busy_lock
-    if busy_lock is None:
-        return await _delete()
-    async with busy_lock:
-        return await _delete()
+    try:
+        async with runtime_state.exclusive_slot():
+            return await _delete()
+    except ExclusiveSlotTimeout as exc:
+        raise _account_busy_error() from exc
 
 
 @router.put("/{account_id}", response_model=AccountResponse)
@@ -243,6 +267,7 @@ async def update_account(
 async def import_cookies(
     req: ImportCookiesRequest,
     account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
 ):
     """从 cookie 字符串导入账号。
 
@@ -263,12 +288,27 @@ async def import_cookies(
     # 从 cookie 中尝试提取 email（如果有 Gmail 相关信息）
     name = req.name or "导入的账号"
 
-    account = account_service._store.save_account(
-        name=name,
-        email=req.email,
-        storage_state=storage_state,
-        account_id=req.account_id,
-    )
+    async def _save():
+        await _detach_active_account_if_overwriting(req.account_id, account_service, runtime_state)
+        try:
+            account = account_service._store.save_account(
+                name=name,
+                email=req.email,
+                storage_state=storage_state,
+                account_id=req.account_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        rotator = runtime_state.rotator
+        if rotator:
+            rotator.add_account(account.id)
+        return account
+
+    try:
+        async with runtime_state.exclusive_slot():
+            account = await _save()
+    except ExclusiveSlotTimeout as exc:
+        raise _account_busy_error() from exc
 
     return ImportCookiesResponse(
         account_id=account.id,
@@ -285,15 +325,28 @@ async def import_account(
     runtime_state=Depends(get_runtime_state),
 ):
     """导入单个账号导出包。"""
+    target_account_id = None
+    account_data = req.package.get("account") if isinstance(req.package, dict) else None
+    if req.preserve_id and isinstance(account_data, dict):
+        target_account_id = account_data.get("id")
+
+    async def _import():
+        await _detach_active_account_if_overwriting(target_account_id, account_service, runtime_state)
+        try:
+            return account_service.import_account_package(
+                req.package,
+                preserve_id=req.preserve_id,
+                name=req.name,
+                email=req.email,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
-        account = account_service.import_account_package(
-            req.package,
-            preserve_id=req.preserve_id,
-            name=req.name,
-            email=req.email,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        async with runtime_state.exclusive_slot():
+            account = await _import()
+    except ExclusiveSlotTimeout as exc:
+        raise _account_busy_error() from exc
 
     rotator = runtime_state.rotator
     if rotator:
@@ -310,3 +363,20 @@ async def import_account(
         email=account.email,
         cookie_count=len(cookies) if isinstance(cookies, list) else 0,
     )
+
+
+async def _detach_active_account_if_overwriting(
+    account_id: str | None,
+    account_service,
+    runtime_state,
+) -> None:
+    if not account_id:
+        return
+    active = account_service.get_active_account()
+    if active is None or active.id != account_id:
+        return
+    client = runtime_state.client
+    if client and client._session:
+        await client._session.switch_auth(None)
+    if runtime_state.snapshot_cache is not None:
+        runtime_state.snapshot_cache.clear()

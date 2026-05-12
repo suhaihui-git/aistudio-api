@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from aistudio_api.application.api_service import health_response, stats_response
 from aistudio_api.api.dependencies import get_runtime_state, require_admin
+from aistudio_api.api.state import ExclusiveSlotTimeout
 
 router = APIRouter()
 
@@ -93,18 +94,20 @@ async def force_next_account(runtime_state=Depends(get_runtime_state), admin=Dep
     # 切换账号
     account_service = runtime_state.account_service
     client = runtime_state.client
-    busy_lock = runtime_state.busy_lock
-
-    if not all([account_service, client, busy_lock]):
+    if not all([account_service, client]):
         raise HTTPException(503, detail="服务未就绪")
 
-    result = await account_service.activate_account(
-        next_account.id,
-        client._session,
-        runtime_state.snapshot_cache,
-        busy_lock,
-        keep_snapshot_cache=False,
-    )
+    try:
+        async with runtime_state.exclusive_slot():
+            result = await account_service.activate_account(
+                next_account.id,
+                client._session,
+                runtime_state.snapshot_cache,
+                None,
+                keep_snapshot_cache=False,
+            )
+    except ExclusiveSlotTimeout as exc:
+        raise HTTPException(409, detail="当前有请求运行，请稍后重试") from exc
 
     if result is None:
         raise HTTPException(500, detail="切换失败")
