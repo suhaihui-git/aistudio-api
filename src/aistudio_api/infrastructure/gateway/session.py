@@ -348,7 +348,7 @@ class BrowserSession:
             for (var k in h) {
                 xhr.setRequestHeader(k, h[k]);
             }
-            xhr.withCredentials = false;
+            xhr.withCredentials = true;
             xhr.timeout = args.timeout * 1000;
 
             xhr.onreadystatechange = function() {
@@ -505,7 +505,10 @@ class BrowserSession:
 
     def _ensure_hook_page_sync(self):
         self._ensure_browser_sync()
-        if "aistudio.google.com" not in (self._hook_page.url or ""):
+        if (
+            "aistudio.google.com" not in (self._hook_page.url or "")
+            or self._hook_page.query_selector("textarea") is None
+        ):
             self._goto_aistudio_sync(self._hook_page)
         self._install_hooks_sync(self._hook_page)
         return self._hook_page
@@ -520,6 +523,10 @@ class BrowserSession:
 
         page.evaluate(DIALOG_CLEANUP_JS)
         textarea = page.query_selector("textarea")
+        if textarea is None:
+            self._goto_aistudio_sync(page)
+            self._install_hooks_sync(page)
+            textarea = page.query_selector("textarea")
         if textarea is None:
             # Debug: show page state
             try:
@@ -832,7 +839,7 @@ mw:((hash) => {
                 for (var k in h) {
                     xhr.setRequestHeader(k, h[k]);
                 }
-                xhr.withCredentials = false;
+                xhr.withCredentials = true;
                 xhr.timeout = args.timeout * 1000;
                 xhr.onload = function() {
                     resolve({status: xhr.status, body: xhr.responseText});
@@ -877,13 +884,16 @@ mw:((hash) => {
                         return
                     if has_dms and _ > 20:
                         page.evaluate(DIALOG_CLEANUP_JS)
-                log.debug(f"[timing] UI partially ready after {_t.time()-_t0:.1f}s (dms={has_dms}, textarea={has_textarea})", flush=True)
-                return
+                log.debug(
+                    f"[timing] UI not ready after {_t.time()-_t0:.1f}s (dms={has_dms}, textarea={has_textarea}, url={page.url})",
+                    flush=True,
+                )
             except Exception as exc:
                 log.debug(f"[timing] goto {url} failed after {_t.time()-_t0:.1f}s: {exc}")
                 last_exc = exc
         if last_exc is not None:
             raise last_exc
+        raise RuntimeError(self._build_hook_page_error_sync(page, "chat_ui_not_ready"))
 
     def _install_hooks_sync(self, page) -> None:
         result = page.evaluate(INSTALL_HOOKS_JS)

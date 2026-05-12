@@ -11,6 +11,18 @@ from aistudio_api.infrastructure.account.login_service import LoginService, Logi
 
 logger = logging.getLogger("aistudio.account")
 
+AUTH_COOKIE_NAMES = {
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+    "__Secure-1PAPISID",
+    "__Secure-3PAPISID",
+}
+
 
 class AccountService:
     """账号管理服务。"""
@@ -62,12 +74,39 @@ class AccountService:
         if current_auth == target_auth:
             return account
 
+        self._log_cookie_health(auth_path, account.id)
         await browser_session.switch_auth(target_auth)
         if not keep_snapshot_cache and snapshot_cache is not None:
             snapshot_cache.clear()
             logger.info("已清除 snapshot 缓存")
         logger.info("已加载活跃账号: %s (%s)", account.id, account.name)
         return account
+
+    def _log_cookie_health(self, auth_path: Any, account_id: str) -> None:
+        """记录账号包是否包含常见 Google 登录 cookie，不输出敏感值。"""
+        try:
+            storage_state = json.loads(auth_path.read_text(encoding="utf-8"))
+            cookies = storage_state.get("cookies") if isinstance(storage_state, dict) else []
+            if not isinstance(cookies, list):
+                cookies = []
+            names = {cookie.get("name") for cookie in cookies if isinstance(cookie, dict)}
+            domains = {
+                cookie.get("domain")
+                for cookie in cookies
+                if isinstance(cookie, dict) and isinstance(cookie.get("domain"), str)
+            }
+            present = sorted(name for name in AUTH_COOKIE_NAMES if name in names)
+            logger.info(
+                "账号 cookie 检查: account=%s, cookies=%d, google_domains=%d, auth_cookies=%s",
+                account_id,
+                len(cookies),
+                len([domain for domain in domains if "google.com" in domain]),
+                present,
+            )
+            if not present:
+                logger.warning("账号 %s 未包含常见 Google 登录 cookie，可能会出现 CREDENTIALS_MISSING", account_id)
+        except Exception as exc:
+            logger.warning("账号 %s cookie 检查失败: %s", account_id, exc)
 
     async def start_login(self, name: str | None = None) -> str:
         """启动登录流程，返回 session_id。"""
