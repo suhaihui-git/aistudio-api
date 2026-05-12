@@ -4,9 +4,9 @@ services:
     container_name: aistudio-api
     restart: unless-stopped
     shm_size: "1gb"
-    expose:
-      - "8080"
-      # - "9222"  # Optional: expose only when debugging Camoufox
+    ports:
+      - "8080:8080"
+      # - "9222:9222"  # Optional: expose only when debugging Camoufox
     volumes:
       - ./data:/app/data           # Account data persistence
       - ./.env:/app/.env:ro        # Environment config (read-only)
@@ -24,15 +24,3 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 3
-
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: aistudio-api-nginx
-    restart: unless-stopped
-    depends_on:
-      aistudio-api:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
