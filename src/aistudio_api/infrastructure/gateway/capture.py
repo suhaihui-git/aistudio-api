@@ -25,8 +25,22 @@ class CapturedRequest:
 
     def __post_init__(self):
         parsed = json.loads(self.body)
+        if not is_aistudio_wire_body(parsed):
+            raise ValueError("captured body is not an AI Studio GenerateContent wire request")
         self.model = parsed[0] if parsed else ""
         self.snapshot = parsed[4] if len(parsed) > 4 and isinstance(parsed[4], str) else ""
+
+
+def is_aistudio_wire_body(parsed: object) -> bool:
+    if not isinstance(parsed, list) or len(parsed) < 5:
+        return False
+    if not isinstance(parsed[0], str) or not parsed[0].startswith("models/"):
+        return False
+    if not isinstance(parsed[1], list):
+        return False
+    if not isinstance(parsed[3], list):
+        return False
+    return True
 
 
 class RequestCaptureService:
@@ -54,7 +68,10 @@ class RequestCaptureService:
             cached = self._snapshot_cache.get(prompt, model=model)
             if cached:
                 _snapshot, url, headers, body = cached
-                return CapturedRequest(url=url, headers=headers, body=body)
+                try:
+                    return CapturedRequest(url=url, headers=headers, body=body)
+                except ValueError as exc:
+                    logger.warning("忽略无效的 snapshot 缓存: model=%s, error=%s", model, exc)
 
         template = await self._ensure_template(model)
         # 先只走 inlineData 路径，避免 fileData/Drive 上传链路干扰主流程。
@@ -81,7 +98,15 @@ class RequestCaptureService:
 
     async def _ensure_template(self, model: str) -> CapturedRequest:
         if model in self._templates:
-            return self._templates[model]
+            try:
+                return CapturedRequest(
+                    url=self._templates[model].url,
+                    headers=self._templates[model].headers,
+                    body=self._templates[model].body,
+                )
+            except ValueError as exc:
+                logger.warning("忽略无效的模板缓存: model=%s, error=%s", model, exc)
+                self._templates.pop(model, None)
 
         captured = await self._session.capture_template(model)
         template = CapturedRequest(**captured)

@@ -21,6 +21,18 @@ log = logging.getLogger("aistudio.session")
 
 AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat"
 AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
+PROFILE_STORAGE_SEED_MARKER = ".aistudio_storage_seed"
+GOOGLE_AUTH_COOKIE_NAMES = {
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+    "__Secure-1PAPISID",
+    "__Secure-3PAPISID",
+}
 INSTALL_HOOKS_JS = r"""
 mw:((() => {
     // Verify hooks are actually present on XHR prototype, not just a stale flag
@@ -490,8 +502,11 @@ class BrowserSession:
             "main_world_eval": True,
             "proxy": build_camoufox_proxy(settings.proxy_url),
         }
+        profile_had_browser_state = False
         if self._profile_dir:
-            Path(self._profile_dir).mkdir(parents=True, exist_ok=True)
+            profile_path = Path(self._profile_dir)
+            profile_path.mkdir(parents=True, exist_ok=True)
+            profile_had_browser_state = self._profile_has_browser_state(profile_path)
             launch_kwargs["persistent_context"] = True
             launch_kwargs["user_data_dir"] = self._profile_dir
 
@@ -502,7 +517,7 @@ class BrowserSession:
         if self._profile_dir:
             self._browser = None
             self._ctx = browser_or_context
-            self._seed_persistent_context_sync(self._ctx)
+            self._seed_persistent_context_sync(self._ctx, profile_had_browser_state=profile_had_browser_state)
         else:
             self._browser = browser_or_context
             self._ctx = self._new_context_sync()
@@ -528,22 +543,58 @@ class BrowserSession:
                 return ctx
         return self._browser.new_context()
 
-    def _seed_persistent_context_sync(self, ctx) -> None:
+    def _seed_persistent_context_sync(self, ctx, *, profile_had_browser_state: bool = False) -> None:
         if not self._auth_file or not Path(self._auth_file).exists() or not self._profile_dir:
             return
         profile_dir = Path(self._profile_dir)
-        marker = profile_dir / ".aistudio_storage_seed"
+        marker = profile_dir / PROFILE_STORAGE_SEED_MARKER
         if marker.exists():
             return
-        self._apply_storage_state_sync(ctx, self._auth_file)
-        marker.write_text(
-            json.dumps(
+        if profile_had_browser_state:
+            self._write_storage_seed_marker(
+                marker,
                 {
                     "auth_file": str(Path(self._auth_file).resolve()),
-                    "seeded_at": int(time.time()),
+                    "reason": "existing_browser_profile",
                 },
-                ensure_ascii=False,
-            ),
+            )
+            log.info("检测到已有浏览器 profile，跳过 auth.json 二次种子: %s", profile_dir)
+            return
+        self._apply_storage_state_sync(ctx, self._auth_file)
+        self._write_storage_seed_marker(
+            marker,
+            {
+                "auth_file": str(Path(self._auth_file).resolve()),
+                "reason": "storage_state_seed",
+            },
+        )
+
+    def _profile_has_browser_state(self, profile_dir: Path) -> bool:
+        cookies_db = profile_dir / "cookies.sqlite"
+        if not cookies_db.is_file():
+            return False
+        try:
+            import sqlite3
+
+            with sqlite3.connect(f"file:{cookies_db}?mode=ro", uri=True) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT name
+                    FROM moz_cookies
+                    WHERE host LIKE '%google.com'
+                    """
+                ).fetchall()
+        except Exception as exc:
+            log.debug("读取 profile cookie 数据库失败，按空 profile 处理: %s", exc)
+            return False
+        cookie_names = {str(row[0]) for row in rows if row}
+        return bool(cookie_names & GOOGLE_AUTH_COOKIE_NAMES)
+
+    def _write_storage_seed_marker(self, marker: Path, data: dict[str, Any]) -> None:
+        payload = dict(data)
+        payload["seeded_at"] = int(time.time())
+        marker.write_text(
+            json.dumps(payload, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -678,6 +729,15 @@ class BrowserSession:
                 capture_state["last_generate_body_len"] = len(body)
                 if not body:
                     capture_state["last_generate_error"] = f"{source}: empty request body"
+                    return
+                if not self._looks_like_aistudio_wire_body(body):
+                    capture_state["last_generate_error"] = f"{source}: ignored non-wire body: {body[:80]!r}"
+                    log.debug(
+                        "忽略非 AI Studio wire GenerateContent 请求: source=%s url=%s body_prefix=%r",
+                        source,
+                        request.url,
+                        body[:80],
+                    )
                     return
                 captured["url"] = request.url
                 captured["headers"] = dict(request.headers)
@@ -1057,6 +1117,20 @@ mw:((hash) => {
     def _is_generate_content_url(self, url: str) -> bool:
         lowered = (url or "").lower()
         return "generatecontent" in lowered and "count" not in lowered
+
+    def _looks_like_aistudio_wire_body(self, body: str) -> bool:
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            return False
+        return (
+            isinstance(parsed, list)
+            and len(parsed) >= 5
+            and isinstance(parsed[0], str)
+            and parsed[0].startswith("models/")
+            and isinstance(parsed[1], list)
+            and isinstance(parsed[3], list)
+        )
 
     def _build_template_capture_error_sync(self, page, model: str, capture_state: dict[str, Any]) -> str:
         try:

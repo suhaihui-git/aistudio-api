@@ -63,6 +63,7 @@ def test_save_account_copies_logged_in_profile(tmp_path):
 
     assert (profile_path / "cookies.sqlite").read_text(encoding="utf-8") == "session"
     assert not (profile_path / "cache2").exists()
+    assert (profile_path / ".aistudio_storage_seed").is_file()
 
 
 def test_save_account_rejects_unsafe_account_id(tmp_path):
@@ -96,3 +97,63 @@ def test_account_service_switches_browser_to_persistent_profile(tmp_path):
     assert loaded.id == account.id
     assert browser_session.auth_file == str(store.get_auth_path(account.id).resolve())
     assert browser_session.profile_dir == str(store.get_profile_path(account.id).resolve())
+
+
+def test_browser_session_skips_storage_seed_for_existing_profile(tmp_path):
+    from aistudio_api.infrastructure.gateway.session import BrowserSession
+
+    profile_path = tmp_path / "profile"
+    profile_path.mkdir()
+    (profile_path / "cookies.sqlite").write_text("browser-state", encoding="utf-8")
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"cookies":[{"name":"SID","value":"seed"}],"origins":[]}', encoding="utf-8")
+
+    class DummyContext:
+        def __init__(self):
+            self.added_cookies = []
+
+        def add_cookies(self, cookies):
+            self.added_cookies.extend(cookies)
+
+    session = BrowserSession(port=9222)
+    session._auth_file = str(auth_path)
+    session._profile_dir = str(profile_path)
+    ctx = DummyContext()
+
+    session._seed_persistent_context_sync(ctx, profile_had_browser_state=True)
+
+    assert ctx.added_cookies == []
+    marker = profile_path / ".aistudio_storage_seed"
+    assert marker.is_file()
+    assert "existing_browser_profile" in marker.read_text(encoding="utf-8")
+
+
+def test_browser_session_seeds_empty_profile_from_storage_state(tmp_path):
+    from aistudio_api.infrastructure.gateway.session import BrowserSession
+
+    profile_path = tmp_path / "profile"
+    profile_path.mkdir()
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        '{"cookies":[{"name":"SID","value":"seed","domain":".google.com","path":"/"}],"origins":[]}',
+        encoding="utf-8",
+    )
+
+    class DummyContext:
+        def __init__(self):
+            self.added_cookies = []
+
+        def add_cookies(self, cookies):
+            self.added_cookies.extend(cookies)
+
+    session = BrowserSession(port=9222)
+    session._auth_file = str(auth_path)
+    session._profile_dir = str(profile_path)
+    ctx = DummyContext()
+
+    session._seed_persistent_context_sync(ctx, profile_had_browser_state=False)
+
+    assert ctx.added_cookies[0]["name"] == "SID"
+    marker = profile_path / ".aistudio_storage_seed"
+    assert marker.is_file()
+    assert "storage_state_seed" in marker.read_text(encoding="utf-8")

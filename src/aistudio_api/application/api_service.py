@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import logging
 import time
+from contextlib import suppress
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
+from aistudio_api.config import settings
 from aistudio_api.application.chat_service import cleanup_files, normalize_chat_request, normalize_gemini_request, normalize_openai_tools
 from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
@@ -28,6 +31,41 @@ from aistudio_api.api.schemas import ChatRequest, GeminiGenerateContentRequest, 
 from aistudio_api.api.state import ExclusiveSlotTimeout, runtime_state
 
 logger = logging.getLogger("aistudio.server")
+
+
+async def _iter_with_stream_heartbeat(events, heartbeat_seconds: float):
+    """Yield stream events while keeping the outer SSE connection alive."""
+    heartbeat_seconds = heartbeat_seconds if heartbeat_seconds > 0 else 15
+    queue: asyncio.Queue[tuple[str, object | None]] = asyncio.Queue()
+
+    async def _pump() -> None:
+        try:
+            async for event in events:
+                await queue.put(("event", event))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        finally:
+            await queue.put(("done", None))
+
+    task = asyncio.create_task(_pump())
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=heartbeat_seconds)
+            except asyncio.TimeoutError:
+                yield ("heartbeat", None)
+                continue
+            if kind == "event":
+                yield payload
+                continue
+            if kind == "error":
+                raise payload
+            break
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 async def _try_switch_account(*, exclusive: bool = True) -> bool:
@@ -337,9 +375,12 @@ def _build_streaming_response(
     tools: list[list] | None = None,
 ) -> StreamingResponse:
     async def stream_response():
+        def mark_yield(payload: str) -> str:
+            return payload
+
         busy_lock = runtime_state.busy_lock
         if busy_lock is None:
-            yield sse_error("Server not ready")
+            yield mark_yield(sse_error("Server not ready"))
             cleanup_files(cleanup_paths)
             return
 
@@ -351,7 +392,7 @@ def _build_streaming_response(
                 saw_tool_calls = False
                 for stream_attempt in range(2):
                     try:
-                        async for event_type, text in client.stream_generate_content(
+                        events = client.stream_generate_content(
                             model=model,
                             capture_prompt=capture_prompt,
                             capture_images=capture_images,
@@ -367,19 +408,28 @@ def _build_streaming_response(
                             max_tokens=max_tokens,
                             tools=tools,
                             force_refresh_capture=stream_attempt > 0,
+                        )
+                        async for event_type, text in _iter_with_stream_heartbeat(
+                            events,
+                            settings.stream_heartbeat_seconds,
                         ):
+                            if event_type == "heartbeat":
+                                yield mark_yield(": keep-alive\n\n")
+                                continue
                             if event_type == "body" and text:
-                                yield sse_chunk(chat_id, model, text, include_usage=include_usage)
+                                yield mark_yield(sse_chunk(chat_id, model, text, include_usage=include_usage))
                             elif event_type == "thinking" and text:
-                                yield sse_chunk(chat_id, model, "", thinking=text, include_usage=include_usage)
+                                yield mark_yield(sse_chunk(chat_id, model, "", thinking=text, include_usage=include_usage))
                             elif event_type == "tool_calls" and text:
                                 saw_tool_calls = True
-                                yield sse_chunk(
-                                    chat_id,
-                                    model,
-                                    "",
-                                    tool_calls=to_openai_tool_calls(text if isinstance(text, list) else []),
-                                    include_usage=include_usage,
+                                yield mark_yield(
+                                    sse_chunk(
+                                        chat_id,
+                                        model,
+                                        "",
+                                        tool_calls=to_openai_tool_calls(text if isinstance(text, list) else []),
+                                        include_usage=include_usage,
+                                    )
                                 )
                             elif event_type == "usage":
                                 final_usage = text if isinstance(text, dict) else None
@@ -398,14 +448,14 @@ def _build_streaming_response(
                         raise
 
                 runtime_state.record(model, "success", final_usage)
-                yield sse_chunk(chat_id, model, "", finish="tool_calls" if saw_tool_calls else "stop", include_usage=include_usage)
+                yield mark_yield(sse_chunk(chat_id, model, "", finish="tool_calls" if saw_tool_calls else "stop", include_usage=include_usage))
                 if include_usage:
-                    yield sse_usage_chunk(chat_id, model, final_usage)
-                yield "data: [DONE]\n\n"
+                    yield mark_yield(sse_usage_chunk(chat_id, model, final_usage))
+                yield mark_yield("data: [DONE]\n\n")
             except Exception as exc:
                 logger.error("Stream error: %s", exc, exc_info=True)
                 runtime_state.record(model, "errors")
-                yield sse_error(str(exc))
+                yield mark_yield(sse_error(str(exc)))
             finally:
                 cleanup_files(cleanup_paths)
 
@@ -535,9 +585,14 @@ async def handle_gemini_generate_content(
 
 def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict) -> StreamingResponse:
     async def stream_response():
+        def gemini_sse(payload: dict | str) -> str:
+            if isinstance(payload, str):
+                return f"data: {payload}\n\n"
+            return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
         busy_lock = runtime_state.busy_lock
         if busy_lock is None:
-            yield "data: " + json.dumps({"error": {"message": "Server not ready"}}, ensure_ascii=False) + "\n\n"
+            yield gemini_sse({"error": {"message": "Server not ready"}})
             cleanup_files(normalized["cleanup_paths"])
             return
 
@@ -547,7 +602,7 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                 final_usage = None
                 for stream_attempt in range(2):
                     try:
-                        async for event_type, text in client.stream_generate_content(
+                        events = client.stream_generate_content(
                             model=normalized["model"],
                             capture_prompt=normalized["capture_prompt"],
                             capture_images=normalized["capture_images"],
@@ -561,9 +616,16 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                             generation_config_overrides=normalized["generation_config_overrides"],
                             sanitize_plain_text=False,
                             force_refresh_capture=stream_attempt > 0,
+                        )
+                        async for event_type, text in _iter_with_stream_heartbeat(
+                            events,
+                            settings.stream_heartbeat_seconds,
                         ):
+                            if event_type == "heartbeat":
+                                yield ": keep-alive\n\n"
+                                continue
                             if event_type == "body" and text:
-                                yield "data: " + json.dumps(
+                                yield gemini_sse(
                                     {
                                         "candidates": [
                                             {
@@ -571,11 +633,10 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                                                 "finishReason": None,
                                             }
                                         ]
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n\n"
+                                    }
+                                )
                             elif event_type == "thinking" and text:
-                                yield "data: " + json.dumps(
+                                yield gemini_sse(
                                     {
                                         "candidates": [
                                             {
@@ -586,9 +647,8 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                                                 "finishReason": None,
                                             }
                                         ]
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n\n"
+                                    }
+                                )
                             elif event_type == "usage":
                                 final_usage = text if isinstance(text, dict) else None
                         break
@@ -607,18 +667,17 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
 
                 runtime_state.record(normalized["model"], "success", final_usage)
                 if final_usage:
-                    yield "data: " + json.dumps(
+                    yield gemini_sse(
                         {
                             "candidates": [],
                             "usageMetadata": to_gemini_usage_metadata(final_usage),
-                        },
-                        ensure_ascii=False,
-                    ) + "\n\n"
-                yield "data: [DONE]\n\n"
+                        }
+                    )
+                yield gemini_sse("[DONE]")
             except Exception as exc:
                 logger.error("Gemini stream error: %s", exc, exc_info=True)
                 runtime_state.record(normalized["model"], "errors")
-                yield "data: " + json.dumps({"error": {"message": str(exc)}}, ensure_ascii=False) + "\n\n"
+                yield gemini_sse({"error": {"message": str(exc)}})
             finally:
                 cleanup_files(normalized["cleanup_paths"])
 

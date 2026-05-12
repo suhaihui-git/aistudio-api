@@ -16,6 +16,7 @@ from typing import Any
 
 logger = logging.getLogger("aistudio.account_store")
 _ACCOUNT_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+PROFILE_STORAGE_SEED_MARKER = ".aistudio_storage_seed"
 
 # 默认搜索路径（与 config.py 保持一致）
 _SEARCH_ROOTS: list[Path] = [
@@ -230,6 +231,7 @@ class AccountStore:
         self._reset_profile_seed(account_dir)
         if profile_source is not None:
             self._copy_profile_dir(Path(profile_source), account_dir / "profile")
+            self._write_profile_seed_marker(account_dir / "profile", "copied_login_profile")
         # 写入 auth.json
         (account_dir / "auth.json").write_text(
             json.dumps(storage_state, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -365,7 +367,7 @@ class AccountStore:
 
     def _reset_profile_seed(self, account_dir: Path) -> None:
         profile_dir = account_dir / "profile"
-        marker = profile_dir / ".aistudio_storage_seed"
+        marker = profile_dir / PROFILE_STORAGE_SEED_MARKER
         if profile_dir.exists():
             if profile_dir.is_dir():
                 try:
@@ -382,3 +384,17 @@ class AccountStore:
                 except OSError as exc:
                     raise OSError(f"profile 路径不是目录且无法删除: {profile_dir}") from exc
         profile_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write_profile_seed_marker(self, profile_dir: Path, reason: str) -> None:
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        marker = profile_dir / PROFILE_STORAGE_SEED_MARKER
+        marker.write_text(
+            json.dumps(
+                {
+                    "reason": reason,
+                    "seeded_at": int(time.time()),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
