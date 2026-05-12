@@ -167,7 +167,9 @@ Content-Type: application/json
 AISTUDIO_ENABLE_LOGIN_DESKTOP=1
 AISTUDIO_LOGIN_NOVNC_PORT=6080
 AISTUDIO_LOGIN_NOVNC_BIND=127.0.0.1:6080
-AISTUDIO_LOGIN_NOVNC_URL=http://服务器IP:6080/vnc.html
+AISTUDIO_LOGIN_NOVNC_URL=
+AISTUDIO_LOGIN_NOVNC_PUBLIC_PORT=6080
+AISTUDIO_LOGIN_NOVNC_SCHEME=
 AISTUDIO_LOGIN_VNC_PASSWORD=一个强密码
 ```
 
@@ -183,6 +185,13 @@ AISTUDIO_LOGIN_VNC_PASSWORD=一个强密码
 前端会自动打开 `browser_url`，在远程浏览器里完成 Google 登录。登录成功后，后端保存该账号的 `auth.json` 和持久 Profile。
 
 安全注意：noVNC 页面可以直接操作 Google 登录态，线上必须放在内网/VPN/反代鉴权后面，或设置 `AISTUDIO_LOGIN_VNC_PASSWORD`，不要裸露公网。当 `AISTUDIO_LOGIN_NOVNC_BIND` 不是 localhost 且未设置 VNC 密码时，容器会拒绝启动。
+
+部署注意：`AISTUDIO_LOGIN_NOVNC_BIND=127.0.0.1:6080` 只允许服务器本机访问 noVNC。如果你在自己电脑访问管理后台，不能只把打开的新窗口里的 `localhost` 手动改成服务器 IP，必须选择其一：
+
+- 通过 Nginx/Caddy/VPN/SSH 隧道把服务器本机的 6080 暴露出来，并把 `AISTUDIO_LOGIN_NOVNC_URL` 配成最终可访问地址
+- 或把 `AISTUDIO_LOGIN_NOVNC_BIND` 改成 `0.0.0.0:6080`，同时设置 `AISTUDIO_LOGIN_VNC_PASSWORD` 并放行服务器防火墙/安全组 6080 端口
+
+`AISTUDIO_LOGIN_NOVNC_URL` 留空时，后端会按访问管理后台的 Host 自动推导 `http(s)://同主机:6080/vnc.html`。如果你使用反代路径、HTTPS 域名或非 6080 外部端口，请显式配置 `AISTUDIO_LOGIN_NOVNC_URL`。
 
 ## 3. OpenAI 兼容请求格式
 

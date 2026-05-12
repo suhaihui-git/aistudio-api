@@ -116,9 +116,9 @@ class AccountService:
         except Exception as exc:
             logger.warning("账号 %s cookie 检查失败: %s", account_id, exc)
 
-    async def start_login(self, name: str | None = None) -> str:
+    async def start_login(self, name: str | None = None, browser_url: str | None = None) -> str:
         """启动登录流程，返回 session_id。"""
-        return await self._login.start_login(self._store, name)
+        return await self._login.start_login(self._store, name, browser_url=browser_url)
 
     def get_login_status(self, session_id: str) -> LoginSession | None:
         """获取登录状态。"""

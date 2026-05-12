@@ -52,7 +52,8 @@ docker run -d \
 - 推荐长期方案：每个账号会保存独立的持久浏览器 Profile，目录为 `data/accounts/{account_id}/profile`，同时保留 `auth.json` 用于导入导出和兼容旧流程。
 - Docker 部署必须持久化 `/app/data`，否则重启后账号、Cookie 和浏览器 Profile 都会丢失。
 - 线上环境可启用内置远程登录桌面：容器会启动 Xvfb + x11vnc + noVNC，管理后台点击“登录账号”后会打开 noVNC 页面，在里面完成 Google 登录。
-- Docker Compose 默认把 noVNC 绑定到 `127.0.0.1:6080`。线上请用反向代理/VPN 暴露它，并设置 `AISTUDIO_LOGIN_NOVNC_URL` 为可访问地址，例如 `https://你的域名/novnc/vnc.html`；如果确实要直接开放端口，把 `AISTUDIO_LOGIN_NOVNC_BIND` 改成 `0.0.0.0:6080`。
+- Docker Compose 默认把 noVNC 绑定到服务器本机 `127.0.0.1:6080`，外部电脑不能直接访问。线上请用反向代理/VPN 暴露它，并设置 `AISTUDIO_LOGIN_NOVNC_URL` 为可访问地址，例如 `https://你的域名/novnc/vnc.html`；如果确实要直接开放端口，把 `AISTUDIO_LOGIN_NOVNC_BIND` 改成 `0.0.0.0:6080`，并设置 `AISTUDIO_LOGIN_VNC_PASSWORD`。
+- `AISTUDIO_LOGIN_NOVNC_URL` 留空时，管理后台会按当前访问地址自动生成 `http(s)://同主机:6080/vnc.html`。如果 noVNC 走反代路径或非 6080 端口，请显式配置 `AISTUDIO_LOGIN_NOVNC_URL`，或设置 `AISTUDIO_LOGIN_NOVNC_PUBLIC_PORT`。
 - noVNC 登录桌面可以操作 Google 账号，必须放在内网/VPN/反代鉴权后面，或至少设置 `AISTUDIO_LOGIN_VNC_PASSWORD`；当 `AISTUDIO_LOGIN_NOVNC_BIND` 不是 localhost 且未设置密码时，容器会拒绝启动。
 - 不使用 Docker 时，需要自行提供 `DISPLAY`/`WAYLAND_DISPLAY`，例如安装并启动 Xvfb/VNC，然后再点击“登录账号”。
 
@@ -162,6 +163,8 @@ python3 main.py client "画一只猫" --image --save cat.png
 | `AISTUDIO_ACCOUNT_OPERATION_TIMEOUT` | `30` | 账号切换、导入、导出等独占操作等待请求结束的最长时间 |
 | `AISTUDIO_LOGIN_NOVNC_BIND` | `127.0.0.1:6080` | Docker noVNC 暴露地址，公网绑定必须设置 VNC 密码或放在反代鉴权后 |
 | `AISTUDIO_LOGIN_NOVNC_URL` | 空 | 管理后台打开远程登录桌面的 URL |
+| `AISTUDIO_LOGIN_NOVNC_PUBLIC_PORT` | `6080` | 自动推导 noVNC URL 时使用的外部端口 |
+| `AISTUDIO_LOGIN_NOVNC_SCHEME` | 空 | 自动推导 noVNC URL 时强制使用的协议，例如 `https` |
 | `AISTUDIO_LOGIN_VNC_PASSWORD` | 空 | noVNC/VNC 登录密码 |
 | `AISTUDIO_DUMP_RAW_RESPONSE` | `0` | 保存原始响应到磁盘（调试） |
 

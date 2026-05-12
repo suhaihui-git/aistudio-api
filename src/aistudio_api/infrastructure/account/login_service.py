@@ -10,11 +10,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 from aistudio_api.config import settings
 from aistudio_api.infrastructure.browser.camoufox_manager import CamoufoxManager
 
 logger = logging.getLogger("aistudio.login")
+LOCAL_NOVNC_HOSTS = {"localhost", "127.0.0.1", "::1"}
 AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat"
 AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
 GOOGLE_LOGIN_URL = (
@@ -56,12 +58,12 @@ class LoginService:
         self,
         account_store: Any,  # AccountStore
         name: str | None = None,
+        browser_url: str | None = None,
     ) -> str:
         """启动登录流程，返回 session_id。"""
         session_id = self._generate_session_id()
         session = LoginSession(session_id=session_id)
-        if settings.login_novnc_url:
-            session.browser_url = settings.login_novnc_url
+        session.browser_url = browser_url or settings.login_novnc_url or None
         self._sessions[session_id] = session
         # 启动后台任务
         task = asyncio.create_task(
@@ -73,6 +75,16 @@ class LoginService:
     def get_status(self, session_id: str) -> LoginSession | None:
         """获取登录状态。"""
         return self._sessions.get(session_id)
+
+    @staticmethod
+    def is_local_novnc_url(url: str | None) -> bool:
+        if not url:
+            return False
+        try:
+            host = urlparse(url).hostname
+        except Exception:
+            return False
+        return host in LOCAL_NOVNC_HOSTS
 
     async def _login_worker(
         self,

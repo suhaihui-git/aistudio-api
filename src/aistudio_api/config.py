@@ -91,6 +91,10 @@ class Settings:
     )
     login_camoufox_port: int = int(os.getenv("AISTUDIO_LOGIN_CAMOUFOX_PORT", "9223"))
     login_novnc_url: str = os.getenv("AISTUDIO_LOGIN_NOVNC_URL", "")
+    login_novnc_public_port: int = int(
+        os.getenv("AISTUDIO_LOGIN_NOVNC_PUBLIC_PORT", os.getenv("AISTUDIO_LOGIN_NOVNC_PORT", "6080"))
+    )
+    login_novnc_scheme: str = os.getenv("AISTUDIO_LOGIN_NOVNC_SCHEME", "")
     # 账号轮询配置
     account_rotation_mode: str = os.getenv("AISTUDIO_ACCOUNT_ROTATION_MODE", "round_robin")  # round_robin, lru, least_rl
     account_cooldown_seconds: int = int(os.getenv("AISTUDIO_ACCOUNT_COOLDOWN_SECONDS", "60"))

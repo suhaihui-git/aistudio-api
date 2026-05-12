@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from aistudio_api.api.dependencies import get_account_service, get_runtime_state, require_admin
 from aistudio_api.api.state import ExclusiveSlotTimeout
+from aistudio_api.config import settings
 from aistudio_api.infrastructure.account.cookie_parser import parse_cookie_string
+from aistudio_api.infrastructure.account.login_service import LoginService
 
 router = APIRouter(prefix="/accounts", dependencies=[Depends(require_admin)])
 
@@ -82,13 +85,40 @@ def _account_busy_error() -> HTTPException:
     return HTTPException(status_code=409, detail="当前有请求运行，请稍后重试")
 
 
+def _build_browser_url(request: Request) -> str | None:
+    configured = settings.login_novnc_url.strip()
+    if configured and not LoginService.is_local_novnc_url(configured):
+        return configured
+
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if not host:
+        return configured or None
+
+    parsed = urlparse(f"//{host}")
+    hostname = parsed.hostname
+    if not hostname:
+        return configured or None
+
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    scheme = settings.login_novnc_scheme or (forwarded_proto.split(",", 1)[0].strip() if forwarded_proto else request.url.scheme)
+    port = settings.login_novnc_public_port
+    host_part = hostname
+    if ":" in host_part and not host_part.startswith("["):
+        host_part = f"[{host_part}]"
+    if port:
+        host_part = f"{host_part}:{port}"
+    return f"{scheme}://{host_part}/vnc.html"
+
+
 @router.post("/login/start", response_model=LoginStartResponse)
 async def login_start(
     req: LoginStartRequest,
+    request: Request,
     account_service=Depends(get_account_service),
 ):
     """启动 Google 登录流程。"""
-    session_id = await account_service.start_login(req.name)
+    browser_url = _build_browser_url(request)
+    session_id = await account_service.start_login(req.name, browser_url=browser_url)
     session = account_service.get_login_status(session_id)
     return LoginStartResponse(
         session_id=session_id,
