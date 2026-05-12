@@ -64,9 +64,64 @@ def _summarize_error_body(raw_response: str, limit: int = 500) -> str:
     return compact
 
 
+def _strip_browser_only_headers(headers: dict[str, str]) -> dict[str, str]:
+    skipped = {
+        "host",
+        "content-length",
+        "connection",
+        "accept-encoding",
+        "cookie",
+    }
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in skipped and not key.lower().startswith("sec-")
+    }
+
+
+def _is_browser_network_error(exc: Exception) -> bool:
+    return "streaming request failed: network error" in str(exc)
+
+
+def _extract_cookie_header(cookie: dict) -> str | None:
+    name = cookie.get("name")
+    value = cookie.get("value")
+    if not name or value is None:
+        return None
+    return f"{name}={value}"
+
+
 class StreamingGateway:
     def __init__(self, session: BrowserSession | None = None):
         self._session = session
+
+    async def _stream_via_http(
+        self,
+        *,
+        captured: CapturedRequest,
+        modified_body: str,
+        timeout_ms: int,
+    ) -> AsyncGenerator[tuple[str, object | None], None]:
+        import aiohttp
+
+        headers = _strip_browser_only_headers(captured.headers)
+        if self._session is not None:
+            cookies = await self._session.get_cookies()
+            cookie_header = "; ".join(
+                item for item in (_extract_cookie_header(cookie) for cookie in cookies) if item
+            )
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+        headers.setdefault("Origin", "https://aistudio.google.com")
+        headers.setdefault("Referer", "https://aistudio.google.com/")
+
+        timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
+        async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
+            async with session.post(captured.url, data=modified_body, headers=headers) as resp:
+                yield ("status", resp.status)
+                async for chunk in resp.content.iter_chunked(8192):
+                    if chunk:
+                        yield ("chunk", chunk)
 
     async def stream_chat(
         self,
@@ -109,22 +164,46 @@ class StreamingGateway:
         raw_parts: list[str] = []
         status_code = 0
 
-        async for event_type, payload in self._session.send_streaming_request(
-            body=modified_body,
-            timeout_ms=settings.timeout_stream * 1000,
-        ):
-            if event_type == "status" and payload and not status_code:
-                status_code = int(payload)
-            elif event_type == "chunk" and payload:
-                text_payload = payload.decode("utf-8", errors="replace")
-                raw_parts.append(text_payload)
-                for parsed_chunk in parser.feed(text_payload):
-                    usage = parse_chunk_usage(parsed_chunk)
-                    if usage:
-                        latest_usage = usage
-                    ctype, text = classify_chunk(parsed_chunk)
-                    if ctype in ("body", "thinking", "tool_calls") and text:
-                        yield (ctype, text)
+        async def consume_events(events):
+            nonlocal latest_usage, status_code
+            async for event_type, payload in events:
+                if event_type == "status" and payload and not status_code:
+                    status_code = int(payload)
+                elif event_type == "chunk" and payload:
+                    text_payload = payload.decode("utf-8", errors="replace")
+                    raw_parts.append(text_payload)
+                    for parsed_chunk in parser.feed(text_payload):
+                        usage = parse_chunk_usage(parsed_chunk)
+                        if usage:
+                            latest_usage = usage
+                        ctype, text = classify_chunk(parsed_chunk)
+                        if ctype in ("body", "thinking", "tool_calls") and text:
+                            yield (ctype, text)
+
+        try:
+            async for event in consume_events(
+                self._session.send_streaming_request(
+                    body=modified_body,
+                    timeout_ms=settings.timeout_stream * 1000,
+                )
+            ):
+                yield event
+        except RuntimeError as exc:
+            if not _is_browser_network_error(exc):
+                raise
+            logger.warning("浏览器流式重放失败，尝试 HTTP 流式回退: %s", exc)
+            parser = IncrementalJSONStreamParser()
+            latest_usage = None
+            raw_parts.clear()
+            status_code = 0
+            async for event in consume_events(
+                self._stream_via_http(
+                    captured=captured,
+                    modified_body=modified_body,
+                    timeout_ms=settings.timeout_stream * 1000,
+                )
+            ):
+                yield event
 
         raw_response = "".join(raw_parts)
         _dump_stream_exchange(

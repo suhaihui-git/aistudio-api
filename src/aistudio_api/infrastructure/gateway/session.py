@@ -120,6 +120,30 @@ DIALOG_CLEANUP_JS = """(() => {
     document.querySelectorAll('.cdk-overlay-container').forEach((node) => node.remove());
 })()"""
 
+FORBIDDEN_BROWSER_HEADERS = {
+    "accept-charset",
+    "accept-encoding",
+    "access-control-request-headers",
+    "access-control-request-method",
+    "connection",
+    "content-length",
+    "cookie",
+    "date",
+    "dnt",
+    "expect",
+    "host",
+    "keep-alive",
+    "origin",
+    "permissions-policy",
+    "referer",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "user-agent",
+    "via",
+}
+
 
 class BrowserSession:
     def __init__(self, port: int):
@@ -141,6 +165,9 @@ class BrowserSession:
 
     async def ensure_context(self):
         return await self._run_sync(self._ensure_browser_sync)
+
+    async def get_cookies(self) -> list[dict[str, Any]]:
+        return await self._run_sync(self._get_cookies_sync)
 
     async def switch_auth(self, auth_file: str | None) -> None:
         await self._run_sync(self._switch_auth_sync, auth_file)
@@ -207,9 +234,23 @@ class BrowserSession:
         for tpl in self._templates.values():
             if tpl.get("url"):
                 url = tpl["url"]
-                headers = {k: v for k, v in tpl.get("headers", {}).items() if k.lower() not in ("host", "content-length")}
+                headers = self._sanitize_browser_headers(tpl.get("headers", {}))
                 return url, headers
         raise RuntimeError("no captured URL available for replay")
+
+    def _sanitize_browser_headers(self, headers: dict[str, str]) -> dict[str, str]:
+        """Keep only headers that browser JavaScript is allowed to set manually."""
+        cleaned: dict[str, str] = {}
+        for key, value in headers.items():
+            lower = key.lower()
+            if (
+                lower in FORBIDDEN_BROWSER_HEADERS
+                or lower.startswith("sec-")
+                or lower.startswith("proxy-")
+            ):
+                continue
+            cleaned[key] = value
+        return cleaned
 
     def _send_streaming_request_sync(
         self,
@@ -307,7 +348,7 @@ class BrowserSession:
             for (var k in h) {
                 xhr.setRequestHeader(k, h[k]);
             }
-            xhr.withCredentials = true;
+            xhr.withCredentials = false;
             xhr.timeout = args.timeout * 1000;
 
             xhr.onreadystatechange = function() {
@@ -324,7 +365,16 @@ class BrowserSession:
                 push({type: 'done'});
             };
             xhr.onerror = function() {
-                push({type: 'error', message: 'network error'});
+                push({
+                    type: 'error',
+                    message: 'network error',
+                    detail: {
+                        url: args.url,
+                        page: location.href,
+                        readyState: xhr.readyState,
+                        status: xhr.status || 0
+                    }
+                });
             };
             xhr.ontimeout = function() {
                 push({type: 'error', message: 'timeout'});
@@ -369,8 +419,9 @@ class BrowserSession:
                 continue
             if event_type == "error":
                 message = event.get("message", "unknown error")
-                log.debug(f"[stream] error after {_t.time()-_t0:.1f}s: {message}")
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(f"streaming request failed: {message}")))
+                detail = event.get("detail") or {}
+                log.warning("[stream] error after %.1fs: %s %s", _t.time() - _t0, message, detail)
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(f"streaming request failed: {message}; detail={detail}")))
                 loop.call_soon_threadsafe(queue.put_nowait, None)
                 return
             if event_type in ("done", "aborted"):
@@ -431,6 +482,10 @@ class BrowserSession:
         self._install_hooks_sync(self._hook_page)
         log.debug(f"[timing] hooks installed in {_t.time()-_t0:.1f}s")
         return self._ctx
+
+    def _get_cookies_sync(self) -> list[dict[str, Any]]:
+        self._ensure_browser_sync()
+        return self._ctx.cookies() if self._ctx is not None else []
 
     def _new_context_sync(self):
         if self._auth_file and Path(self._auth_file).exists():
@@ -777,7 +832,7 @@ mw:((hash) => {
                 for (var k in h) {
                     xhr.setRequestHeader(k, h[k]);
                 }
-                xhr.withCredentials = true;
+                xhr.withCredentials = false;
                 xhr.timeout = args.timeout * 1000;
                 xhr.onload = function() {
                     resolve({status: xhr.status, body: xhr.responseText});
