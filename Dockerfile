@@ -1,10 +1,10 @@
+# syntax=docker/dockerfile:1.7
 # Use Debian 12 (bookworm) explicitly so package names stay stable.
 FROM python:3.11-slim-bookworm
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Install system dependencies required for Camoufox and Playwright
@@ -49,12 +49,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create app directory
 WORKDIR /app
 
+# Install Camoufox browser before Python app dependencies so requirements.txt
+# changes do not invalidate the large browser download layer.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install camoufox && \
+    python -m camoufox fetch
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-RUN python -m camoufox fetch
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # Copy application code
 COPY src/ src/

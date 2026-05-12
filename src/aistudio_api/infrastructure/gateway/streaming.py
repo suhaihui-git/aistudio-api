@@ -115,12 +115,24 @@ class StreamingGateway:
         headers.setdefault("Origin", "https://aistudio.google.com")
         headers.setdefault("Referer", "https://aistudio.google.com/")
 
+        safe_header_names = sorted(key for key in headers if key.lower() != "cookie")
+        logger.info(
+            "HTTP 流式回退请求: url=%s, headers=%s, cookies=%s",
+            captured.url,
+            safe_header_names,
+            "yes" if "Cookie" in headers else "no",
+        )
         timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
         async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
             async with session.post(captured.url, data=modified_body, headers=headers) as resp:
+                logger.info("HTTP 流式回退状态: status=%s", resp.status)
                 yield ("status", resp.status)
+                saw_chunk = False
                 async for chunk in resp.content.iter_chunked(8192):
                     if chunk:
+                        if not saw_chunk:
+                            logger.info("HTTP 流式回退开始接收响应: first_chunk=%s bytes", len(chunk))
+                            saw_chunk = True
                         yield ("chunk", chunk)
 
     async def stream_chat(
@@ -163,6 +175,7 @@ class StreamingGateway:
         latest_usage: dict | None = None
         raw_parts: list[str] = []
         status_code = 0
+        replay_mode = "browser"
 
         async def consume_events(events):
             nonlocal latest_usage, status_code
@@ -196,6 +209,7 @@ class StreamingGateway:
             latest_usage = None
             raw_parts.clear()
             status_code = 0
+            replay_mode = "http_fallback"
             async for event in consume_events(
                 self._stream_via_http(
                     captured=captured,
@@ -215,11 +229,14 @@ class StreamingGateway:
         )
         if status_code != 200:
             detail = _summarize_error_body(raw_response)
+            logger.warning("流式请求失败: mode=%s, status=%s, detail=%s", replay_mode, status_code, detail)
             if status_code in (401, 403, 429):
                 raise classify_error(status_code, raw_response)
             if detail:
                 raise RequestError(status_code, detail)
             raise RequestError(status_code, "")
 
+        if replay_mode == "http_fallback":
+            logger.info("HTTP 流式回退成功: chunks=%s chars", len(raw_response))
         yield ("usage", latest_usage)
         yield ("done", None)
