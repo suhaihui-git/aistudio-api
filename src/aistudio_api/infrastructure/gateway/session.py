@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from aistudio_api.config import settings
+from aistudio_api.infrastructure.gateway.google_auth import (
+    authorization_header_kinds,
+    build_authorization_header,
+)
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
 
 log = logging.getLogger("aistudio.session")
@@ -137,6 +141,7 @@ FORBIDDEN_BROWSER_HEADERS = {
     "accept-encoding",
     "access-control-request-headers",
     "access-control-request-method",
+    "alt-used",
     "connection",
     "content-length",
     "cookie",
@@ -154,6 +159,7 @@ FORBIDDEN_BROWSER_HEADERS = {
     "upgrade",
     "user-agent",
     "via",
+    "priority",
 }
 
 
@@ -258,6 +264,7 @@ class BrowserSession:
             if tpl.get("url"):
                 url = tpl["url"]
                 headers = self._sanitize_browser_headers(tpl.get("headers", {}))
+                headers = self._refresh_google_auth_header_sync(headers)
                 return url, headers
         raise RuntimeError("no captured URL available for replay")
 
@@ -272,8 +279,21 @@ class BrowserSession:
                 or lower.startswith("proxy-")
             ):
                 continue
-            cleaned[key] = value
+            cleaned[lower] = value
         return cleaned
+
+    def _refresh_google_auth_header_sync(self, headers: dict[str, str]) -> dict[str, str]:
+        if self._ctx is None:
+            return headers
+        try:
+            auth_header = build_authorization_header(self._ctx.cookies())
+        except Exception as exc:
+            log.debug("刷新 Google Authorization header 失败: %s", exc)
+            return headers
+        if auth_header:
+            headers["authorization"] = auth_header
+            log.debug("已刷新 Google Authorization header: parts=%s", authorization_header_kinds(auth_header))
+        return headers
 
     def _send_streaming_request_sync(
         self,
@@ -574,8 +594,13 @@ class BrowserSession:
             return
         profile_dir = Path(self._profile_dir)
         marker = profile_dir / PROFILE_STORAGE_SEED_MARKER
-        if marker.exists():
+        if marker.exists() and profile_had_browser_state:
             return
+        if marker.exists() and not profile_had_browser_state:
+            log.warning(
+                "检测到 profile 种子标记但未发现 Google 登录 cookie，改用 auth.json 补种子: %s",
+                profile_dir,
+            )
         if profile_had_browser_state:
             self._write_storage_seed_marker(
                 marker,

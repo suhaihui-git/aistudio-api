@@ -19,8 +19,31 @@ if [ "${AISTUDIO_ENABLE_LOGIN_DESKTOP:-0}" = "1" ]; then
   Xvfb "$DISPLAY" -screen 0 "$VNC_GEOMETRY" -nolisten tcp &
   XVFB_PID="$!"
 
-  autocutsel -fork -selection CLIPBOARD >/tmp/autocutsel-clipboard.log 2>&1 || true
-  autocutsel -fork -selection PRIMARY >/tmp/autocutsel-primary.log 2>&1 || true
+  DISPLAY_NUM="${DISPLAY#*:}"
+  DISPLAY_NUM="${DISPLAY_NUM%%.*}"
+  DISPLAY_SOCKET="/tmp/.X11-unix/X${DISPLAY_NUM}"
+  DISPLAY_READY=0
+  for _ in $(seq 1 50); do
+    if [ -S "$DISPLAY_SOCKET" ]; then
+      DISPLAY_READY=1
+      break
+    fi
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+      echo "Xvfb exited before display $DISPLAY became ready." >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  if [ "$DISPLAY_READY" != "1" ]; then
+    echo "Xvfb display $DISPLAY did not become ready." >&2
+    exit 1
+  fi
+
+  # Clipboard sync is optional; never let it block API startup.
+  if command -v autocutsel >/dev/null 2>&1; then
+    autocutsel -selection CLIPBOARD >/tmp/autocutsel-clipboard.log 2>&1 &
+    autocutsel -selection PRIMARY >/tmp/autocutsel-primary.log 2>&1 &
+  fi
 
   if [ -n "$VNC_PASSWORD" ]; then
     mkdir -p /root/.vnc

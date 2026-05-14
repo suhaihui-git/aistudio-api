@@ -12,6 +12,13 @@ from aistudio_api.config import settings
 from aistudio_api.domain.errors import RequestError, classify_error, is_auth_error_body
 from aistudio_api.domain.models import parse_chunk_usage
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest
+from aistudio_api.infrastructure.gateway.google_auth import (
+    GOOGLE_AUTH_ORIGIN,
+    authorization_header_kinds,
+    build_authorization_header,
+    build_cookie_header,
+    cookies_for_url,
+)
 from aistudio_api.infrastructure.gateway.request_rewriter import modify_body
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.gateway.stream_parser import IncrementalJSONStreamParser, classify_chunk
@@ -72,24 +79,21 @@ def _strip_browser_only_headers(headers: dict[str, str]) -> dict[str, str]:
         "connection",
         "accept-encoding",
         "cookie",
+        "origin",
+        "referer",
+        "alt-used",
     }
-    return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in skipped and not key.lower().startswith("sec-")
-    }
+    cleaned: dict[str, str] = {}
+    for key, value in headers.items():
+        lower = key.lower()
+        if lower in skipped or lower.startswith("sec-") or lower.startswith("proxy-"):
+            continue
+        cleaned[lower] = value
+    return cleaned
 
 
 def _is_browser_network_error(exc: Exception) -> bool:
     return "streaming request failed: network error" in str(exc)
-
-
-def _extract_cookie_header(cookie: dict) -> str | None:
-    name = cookie.get("name")
-    value = cookie.get("value")
-    if not name or value is None:
-        return None
-    return f"{name}={value}"
 
 
 class StreamingGateway:
@@ -106,22 +110,28 @@ class StreamingGateway:
         import aiohttp
 
         headers = _strip_browser_only_headers(captured.headers)
+        target_cookie_count = 0
+        auth_parts: list[str] = []
         if self._session is not None:
             cookies = await self._session.get_cookies()
-            cookie_header = "; ".join(
-                item for item in (_extract_cookie_header(cookie) for cookie in cookies) if item
-            )
+            target_cookie_count = len(cookies_for_url(cookies, captured.url))
+            cookie_header = build_cookie_header(cookies, captured.url)
             if cookie_header:
-                headers["Cookie"] = cookie_header
-        headers.setdefault("Origin", "https://aistudio.google.com")
-        headers.setdefault("Referer", "https://aistudio.google.com/")
+                headers["cookie"] = cookie_header
+            auth_header = build_authorization_header(cookies)
+            if auth_header:
+                headers["authorization"] = auth_header
+                auth_parts = authorization_header_kinds(auth_header)
+        headers["origin"] = GOOGLE_AUTH_ORIGIN
+        headers["referer"] = f"{GOOGLE_AUTH_ORIGIN}/"
 
         safe_header_names = sorted(key for key in headers if key.lower() != "cookie")
         logger.info(
-            "HTTP 流式回退请求: url=%s, headers=%s, cookies=%s",
+            "HTTP 流式回退请求: url=%s, headers=%s, target_cookies=%s, auth=%s",
             captured.url,
             safe_header_names,
-            "yes" if "Cookie" in headers else "no",
+            target_cookie_count,
+            auth_parts,
         )
         timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
         async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
