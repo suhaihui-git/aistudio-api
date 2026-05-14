@@ -521,6 +521,7 @@ class BrowserSession:
         else:
             self._browser = browser_or_context
             self._ctx = self._new_context_sync()
+        self._log_context_cookie_health_sync("主请求浏览器")
         self._hook_page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         log.debug(f"[timing] browser launched in {_t.time()-_t0:.1f}s")
         self._goto_aistudio_sync(self._hook_page)
@@ -532,6 +533,31 @@ class BrowserSession:
     def _get_cookies_sync(self) -> list[dict[str, Any]]:
         self._ensure_browser_sync()
         return self._ctx.cookies() if self._ctx is not None else []
+
+    def _log_context_cookie_health_sync(self, label: str) -> None:
+        if self._ctx is None:
+            return
+        try:
+            cookies = self._ctx.cookies()
+        except Exception as exc:
+            log.info("%s cookie 检查失败: %s", label, exc)
+            return
+        google_cookies = [
+            cookie
+            for cookie in cookies
+            if isinstance(cookie, dict) and "google.com" in str(cookie.get("domain") or "")
+        ]
+        names = {str(cookie.get("name")) for cookie in google_cookies if cookie.get("name")}
+        auth_names = sorted(name for name in GOOGLE_AUTH_COOKIE_NAMES if name in names)
+        log.info(
+            "%s cookie 检查: cookies=%d, google_cookies=%d, auth_cookies=%s",
+            label,
+            len(cookies),
+            len(google_cookies),
+            auth_names,
+        )
+        if not auth_names:
+            log.warning("%s 未检测到常见 Google 登录 cookie，后续可能出现 CREDENTIALS_MISSING", label)
 
     def _new_context_sync(self):
         if self._auth_file and Path(self._auth_file).exists():

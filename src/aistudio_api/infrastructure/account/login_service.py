@@ -20,6 +20,17 @@ logger = logging.getLogger("aistudio.login")
 LOCAL_NOVNC_HOSTS = {"localhost", "127.0.0.1", "::1"}
 AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat"
 AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
+GOOGLE_AUTH_COOKIE_NAMES = {
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+    "__Secure-1PAPISID",
+    "__Secure-3PAPISID",
+}
 GOOGLE_LOGIN_URL = (
     "https://accounts.google.com/ServiceLogin"
     "?continue=https%3A%2F%2Faistudio.google.com%2Fprompts%2Fnew_chat"
@@ -213,6 +224,7 @@ class LoginService:
 
             logger.info("登录完成，保存 cookie")
             storage_state = await context.storage_state()
+            self._log_storage_state_health(storage_state, "登录浏览器")
 
             # 如果还是没提取到邮箱，尝试从 storage state 的 origins 中提取
             if detected_email is None:
@@ -393,3 +405,24 @@ class LoginService:
             """)
         except Exception:
             return None
+
+    def _log_storage_state_health(self, storage_state: dict[str, Any], label: str) -> None:
+        cookies = storage_state.get("cookies") if isinstance(storage_state, dict) else []
+        if not isinstance(cookies, list):
+            cookies = []
+        google_cookies = [
+            cookie
+            for cookie in cookies
+            if isinstance(cookie, dict) and "google.com" in str(cookie.get("domain") or "")
+        ]
+        names = {str(cookie.get("name")) for cookie in google_cookies if cookie.get("name")}
+        auth_names = sorted(name for name in GOOGLE_AUTH_COOKIE_NAMES if name in names)
+        logger.info(
+            "%s storage_state 检查: cookies=%d, google_cookies=%d, auth_cookies=%s",
+            label,
+            len(cookies),
+            len(google_cookies),
+            auth_names,
+        )
+        if not auth_names:
+            logger.warning("%s storage_state 未检测到常见 Google 登录 cookie", label)
