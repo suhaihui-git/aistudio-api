@@ -45,38 +45,167 @@ body{
   display:flex;
   align-items:center;
   justify-content:center;
-  background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+  background:linear-gradient(135deg,#667eea 0%,#764ba2 50%,#f093fb 100%);
   padding:24px;
+  position:relative;
+  overflow:hidden;
+}
+.login-bg-shapes{
+  position:absolute;
+  inset:0;
+  overflow:hidden;
+  pointer-events:none;
+}
+.shape{
+  position:absolute;
+  border-radius:50%;
+  filter:blur(60px);
+  opacity:0.3;
+  animation:float 20s infinite ease-in-out;
+}
+.shape-1{
+  width:400px;
+  height:400px;
+  background:rgba(255,255,255,0.3);
+  top:-100px;
+  left:-100px;
+  animation-delay:0s;
+}
+.shape-2{
+  width:300px;
+  height:300px;
+  background:rgba(255,255,255,0.2);
+  bottom:-50px;
+  right:-50px;
+  animation-delay:5s;
+}
+.shape-3{
+  width:250px;
+  height:250px;
+  background:rgba(255,255,255,0.25);
+  top:50%;
+  right:10%;
+  animation-delay:10s;
+}
+@keyframes float{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(30px,-30px) scale(1.1)}
+  66%{transform:translate(-20px,20px) scale(0.9)}
 }
 .login-panel{
   width:100%;
-  max-width:380px;
-  background:rgba(255,255,255,0.95);
+  max-width:420px;
+  background:rgba(255,255,255,0.98);
   backdrop-filter:var(--blur);
   -webkit-backdrop-filter:var(--blur);
-  border:1px solid rgba(255,255,255,0.3);
-  border-radius:var(--radius-lg);
-  padding:32px;
+  border:1px solid rgba(255,255,255,0.4);
+  border-radius:24px;
+  padding:0;
   display:flex;
   flex-direction:column;
-  gap:20px;
-  box-shadow:var(--shadow-lg);
+  box-shadow:0 20px 60px rgba(0,0,0,0.3);
+  animation:slideUp 0.6s ease-out;
+  overflow:hidden;
 }
-.login-panel .logo{
-  width:48px;
-  height:48px;
+@keyframes slideUp{
+  from{opacity:0;transform:translateY(30px)}
+  to{opacity:1;transform:translateY(0)}
+}
+.login-header{
+  padding:40px 32px 32px;
+  text-align:center;
+  background:linear-gradient(135deg,rgba(102,126,234,0.1),rgba(118,75,162,0.1));
+  border-bottom:1px solid var(--border);
+}
+.logo-large{
+  width:72px;
+  height:72px;
   background:linear-gradient(135deg,var(--primary),#5856d6);
-  border-radius:var(--radius-md);
+  border-radius:20px;
   display:flex;
   align-items:center;
   justify-content:center;
-  color:#fff;
-  font-weight:700;
-  font-size:20px;
-  box-shadow:0 4px 12px rgba(0,122,255,0.3);
+  margin:0 auto 20px;
+  box-shadow:0 8px 24px rgba(0,122,255,0.4);
+  animation:pulse 2s ease-in-out infinite;
 }
-.login-panel h1{font-size:24px;font-weight:600;letter-spacing:-0.02em}
-.login-error{font-size:13px;color:var(--red);padding:8px 12px;background:rgba(255,59,48,0.1);border-radius:var(--radius-sm);border-left:3px solid var(--red)}
+@keyframes pulse{
+  0%,100%{transform:scale(1)}
+  50%{transform:scale(1.05)}
+}
+.login-header h1{
+  font-size:28px;
+  font-weight:700;
+  letter-spacing:-0.02em;
+  margin-bottom:8px;
+  color:var(--text);
+}
+.login-header p{
+  font-size:14px;
+  color:var(--muted);
+}
+.login-form{
+  padding:32px;
+}
+.login-footer{
+  padding:20px 32px;
+  text-align:center;
+  border-top:1px solid var(--border);
+  background:rgba(0,0,0,0.02);
+}
+.login-footer p{
+  font-size:12px;
+  color:var(--muted);
+}
+.input-with-icon{
+  position:relative;
+  display:flex;
+  align-items:center;
+}
+.input-icon{
+  position:absolute;
+  left:14px;
+  width:18px;
+  height:18px;
+  stroke:var(--muted);
+  fill:none;
+  stroke-width:2;
+  pointer-events:none;
+}
+.input-with-icon .modal-input{
+  padding-left:44px;
+}
+.btn-large{
+  padding:14px 24px;
+  font-size:15px;
+  font-weight:600;
+}
+.spinner{
+  width:16px;
+  height:16px;
+  animation:spin 1s linear infinite;
+  display:inline-block;
+  vertical-align:middle;
+  margin-right:8px;
+}
+@keyframes spin{
+  to{transform:rotate(360deg)}
+}
+.login-error{
+  font-size:13px;
+  color:var(--red);
+  padding:10px 14px;
+  background:rgba(255,59,48,0.1);
+  border-radius:var(--radius-sm);
+  border-left:3px solid var(--red);
+  margin-bottom:16px;
+  animation:shake 0.4s ease-in-out;
+}
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  25%{transform:translateX(-10px)}
+  75%{transform:translateX(10px)}
+}
 
 /* Sidebar */
 .sidebar{
