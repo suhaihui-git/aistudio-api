@@ -85,15 +85,17 @@ async def lifespan(app: FastAPI):
     if not settings.use_pure_http:
         async def _warmup():
             try:
-                await client_pool.warmup()
+                await client_pool.warmup(settings.browser_warmup_workers)
             except Exception as e:
                 logger.warning("浏览器预热失败: %s", e)
         warmup_task = asyncio.create_task(_warmup())
+        client_pool.start_maintenance()
 
     yield
     logger.info("Shutting down")
     if warmup_task and not warmup_task.done():
         warmup_task.cancel()
+    await client_pool.close()
     runtime_state.client = None
     runtime_state.client_pool = None
     runtime_state.busy_lock = None

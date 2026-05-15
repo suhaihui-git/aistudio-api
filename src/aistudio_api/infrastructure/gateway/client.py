@@ -59,6 +59,20 @@ class AIStudioClient:
             await self._session.ensure_context()
             logger.info("浏览器预热完成")
 
+    @property
+    def browser_open(self) -> bool:
+        return bool(self._session and self._session.is_open)
+
+    async def close(self, *, release_memory: bool = False, sync_storage: bool = True) -> None:
+        """Close browser resources owned by this client."""
+        if release_memory:
+            self.clear_snapshot_cache()
+            clear_templates = getattr(self._capture_service, "clear_templates", None)
+            if clear_templates is not None:
+                clear_templates()
+        if self._session is not None:
+            await self._session.close(sync_storage=sync_storage)
+
     async def switch_auth(self, auth_file: str | None, profile_dir: str | None = None) -> None:
         """切换账号的 auth 文件。"""
         if self._session is not None:

@@ -196,6 +196,10 @@ class BrowserSession:
     def profile_runtime_dir(self) -> str | None:
         return self._profile_runtime_dir
 
+    @property
+    def is_open(self) -> bool:
+        return self._ctx is not None
+
     async def ensure_context(self):
         return await self._run_sync(self._ensure_browser_sync)
 
@@ -210,6 +214,9 @@ class BrowserSession:
 
     async def sync_storage_state(self) -> None:
         await self._run_sync(self._sync_storage_state_sync)
+
+    async def close(self, *, sync_storage: bool = True) -> None:
+        await self._run_sync(self._close_sync, sync_storage)
 
     async def ensure_hook_page(self):
         await self._run_sync(self._ensure_hook_page_sync)
@@ -448,46 +455,62 @@ class BrowserSession:
 
         deadline = _t.time() + timeout_s
         status_sent = False
-        while _t.time() < deadline:
-            if cancel_event.is_set():
-                log.debug("[stream] cancellation requested for %s", rid)
-                page.evaluate("rid => { if (window.__stream_abort && window.__stream_abort[rid]) window.__stream_abort[rid](); }", rid)
-                break
+        try:
+            while _t.time() < deadline:
+                if cancel_event.is_set():
+                    log.debug("[stream] cancellation requested for %s", rid)
+                    page.evaluate("rid => { if (window.__stream_abort && window.__stream_abort[rid]) window.__stream_abort[rid](); }", rid)
+                    break
 
-            event = page.evaluate("rid => window.__stream_next[rid](250)", rid)
-            event_type = event.get("type")
+                event = page.evaluate("rid => window.__stream_next[rid](250)", rid)
+                event_type = event.get("type")
 
-            if event_type == "idle":
-                continue
-            if event_type == "status":
-                status = event.get("status", 0)
-                log.debug(f"[stream] got status={status} after {_t.time()-_t0:.1f}s")
-                loop.call_soon_threadsafe(queue.put_nowait, ("status", status))
-                status_sent = True
-                continue
-            if event_type == "chunk":
-                text = event.get("text") or ""
-                if text:
-                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", text.encode("utf-8")))
-                continue
-            if event_type == "error":
-                message = event.get("message", "unknown error")
-                detail = event.get("detail") or {}
-                log.warning("[stream] error after %.1fs: %s %s", _t.time() - _t0, message, detail)
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(f"streaming request failed: {message}; detail={detail}")))
+                if event_type == "idle":
+                    continue
+                if event_type == "status":
+                    status = event.get("status", 0)
+                    log.debug(f"[stream] got status={status} after {_t.time()-_t0:.1f}s")
+                    loop.call_soon_threadsafe(queue.put_nowait, ("status", status))
+                    status_sent = True
+                    continue
+                if event_type == "chunk":
+                    text = event.get("text") or ""
+                    if text:
+                        loop.call_soon_threadsafe(queue.put_nowait, ("chunk", text.encode("utf-8")))
+                    continue
+                if event_type == "error":
+                    message = event.get("message", "unknown error")
+                    detail = event.get("detail") or {}
+                    log.warning("[stream] error after %.1fs: %s %s", _t.time() - _t0, message, detail)
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(f"streaming request failed: {message}; detail={detail}")))
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                    return
+                if event_type in ("done", "aborted"):
+                    break
+
+            if not status_sent:
+                log.debug(f"[stream] timeout after {_t.time()-_t0:.1f}s before response status")
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError("streaming request timeout: no response status")))
                 loop.call_soon_threadsafe(queue.put_nowait, None)
                 return
-            if event_type in ("done", "aborted"):
-                break
 
-        if not status_sent:
-            log.debug(f"[stream] timeout after {_t.time()-_t0:.1f}s before response status")
-            loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError("streaming request timeout: no response status")))
+            # Signal completion
             loop.call_soon_threadsafe(queue.put_nowait, None)
-            return
-
-        # Signal completion
-        loop.call_soon_threadsafe(queue.put_nowait, None)
+        finally:
+            try:
+                page.evaluate(
+                    """rid => {
+                        if (window.__stream_abort && window.__stream_abort[rid]) {
+                            try { window.__stream_abort[rid](); } catch (e) {}
+                            delete window.__stream_abort[rid];
+                        }
+                        if (window.__stream_next) delete window.__stream_next[rid];
+                        if (window.__streams) delete window.__streams[rid];
+                    }""",
+                    rid,
+                )
+            except Exception:
+                pass
 
     def _prepare_streaming_sync(self):
         """Prepare page for streaming request. Returns (page, url, headers)."""
@@ -1390,8 +1413,9 @@ mw:((hash) => {
             page.wait_for_timeout(1000)
         raise RuntimeError("page never became idle")
 
-    def _close_sync(self) -> None:
-        self._sync_storage_state_sync()
+    def _close_sync(self, sync_storage: bool = True) -> None:
+        if sync_storage:
+            self._sync_storage_state_sync()
         if self._ctx is not None and not self._profile_runtime_dir:
             try:
                 self._ctx.close()

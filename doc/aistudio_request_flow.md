@@ -68,6 +68,24 @@ data/accounts/registry.json
 AISTUDIO_ACCOUNTS_DIR=/path/to/accounts
 ```
 
+单账号并发大于 1 时，每个浏览器 worker 会从该账号的持久 Profile 复制出独立运行目录，避免多个 Firefox/Camoufox 进程同时打开同一个 Profile：
+
+```text
+data/accounts/{account_id}/.aistudio_workers/worker-1/
+data/accounts/{account_id}/.aistudio_workers/worker-2/
+```
+
+相关内存配置：
+
+```text
+AISTUDIO_SINGLE_ACCOUNT_MAX_CONCURRENCY=1
+AISTUDIO_BROWSER_WARMUP_WORKERS=1
+AISTUDIO_BROWSER_IDLE_TIMEOUT_SECONDS=900
+AISTUDIO_STREAM_DIAGNOSTIC_BUFFER_CHARS=65536
+```
+
+`AISTUDIO_BROWSER_WARMUP_WORKERS` 只决定启动时预热多少个浏览器 worker；未预热的 worker 会在首次请求时懒加载。`AISTUDIO_BROWSER_IDLE_TIMEOUT_SECONDS` 会关闭空闲浏览器释放内存，下次请求再重新打开并从账号 Profile/auth.json 恢复状态。
+
 ### 2.1 导入 Cookie 字符串
 
 管理接口：

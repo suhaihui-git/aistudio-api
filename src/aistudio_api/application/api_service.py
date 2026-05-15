@@ -165,6 +165,7 @@ def health_response() -> dict:
             "capacity": capacity,
             "active": active,
             "available": available,
+            "workers": runtime_state.client_pool.stats() if runtime_state.client_pool is not None else None,
         },
     }
 

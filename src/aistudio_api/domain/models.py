@@ -294,7 +294,7 @@ def parse_response_chunk(chunk: list) -> Candidate:
 
 
 def parse_text_output(raw: str) -> ModelOutput:
-    output = ModelOutput(raw_response=raw)
+    output = ModelOutput()
 
     parts = extract_outer_json(raw)
     if not parts:

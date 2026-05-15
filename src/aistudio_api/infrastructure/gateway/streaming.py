@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from aistudio_api.config import settings
-from aistudio_api.domain.errors import RequestError, classify_error, is_auth_error_body
+from aistudio_api.domain.errors import AuthError, RequestError, classify_error, is_auth_error_body
 from aistudio_api.domain.models import parse_chunk_usage
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest
 from aistudio_api.infrastructure.gateway.google_auth import (
@@ -26,6 +27,34 @@ from aistudio_api.infrastructure.gateway.timeouts import completion_timeout_seco
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
 
 logger = logging.getLogger("aistudio")
+
+
+class _RollingTextBuffer:
+    def __init__(self, max_chars: int):
+        self.max_chars = max(1024, max_chars)
+        self.total_chars = 0
+        self._parts: deque[str] = deque()
+        self._chars = 0
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        self.total_chars += len(text)
+        self._parts.append(text)
+        self._chars += len(text)
+        while self._chars > self.max_chars and self._parts:
+            overflow = self._chars - self.max_chars
+            first = self._parts[0]
+            if len(first) <= overflow:
+                self._parts.popleft()
+                self._chars -= len(first)
+                continue
+            self._parts[0] = first[overflow:]
+            self._chars -= overflow
+            break
+
+    def text(self) -> str:
+        return "".join(self._parts)
 
 
 def _dump_stream_exchange(
@@ -184,19 +213,25 @@ class StreamingGateway:
 
         parser = IncrementalJSONStreamParser()
         latest_usage: dict | None = None
-        raw_parts: list[str] = []
+        raw_parts: list[str] | None = [] if settings.dump_raw_response else None
+        diagnostic_buffer = _RollingTextBuffer(settings.stream_diagnostic_buffer_chars)
+        auth_error_detected = False
         status_code = 0
         replay_mode = "browser"
         timeout_seconds = completion_timeout_seconds(max_tokens=max_tokens, base_seconds=settings.timeout_stream)
 
         async def consume_events(events):
-            nonlocal latest_usage, status_code
+            nonlocal auth_error_detected, latest_usage, status_code
             async for event_type, payload in events:
                 if event_type == "status" and payload and not status_code:
                     status_code = int(payload)
                 elif event_type == "chunk" and payload:
                     text_payload = payload.decode("utf-8", errors="replace")
-                    raw_parts.append(text_payload)
+                    diagnostic_buffer.append(text_payload)
+                    if raw_parts is not None:
+                        raw_parts.append(text_payload)
+                    if not auth_error_detected and is_auth_error_body(text_payload):
+                        auth_error_detected = True
                     for parsed_chunk in parser.feed(text_payload):
                         usage = parse_chunk_usage(parsed_chunk)
                         if usage:
@@ -219,7 +254,9 @@ class StreamingGateway:
             logger.warning("浏览器流式重放失败，尝试 HTTP 流式回退: %s", exc)
             parser = IncrementalJSONStreamParser()
             latest_usage = None
-            raw_parts.clear()
+            raw_parts = [] if settings.dump_raw_response else None
+            diagnostic_buffer = _RollingTextBuffer(settings.stream_diagnostic_buffer_chars)
+            auth_error_detected = False
             status_code = 0
             replay_mode = "http_fallback"
             async for event in consume_events(
@@ -231,7 +268,7 @@ class StreamingGateway:
             ):
                 yield event
 
-        raw_response = "".join(raw_parts)
+        raw_response = "".join(raw_parts) if raw_parts is not None else diagnostic_buffer.text()
         _dump_stream_exchange(
             model=model,
             url=captured.url,
@@ -241,6 +278,8 @@ class StreamingGateway:
         )
         if status_code != 200:
             detail = _summarize_error_body(raw_response)
+            if raw_parts is None and diagnostic_buffer.total_chars > len(raw_response):
+                detail = f"...{detail}" if detail else ""
             logger.warning("流式请求失败: mode=%s, status=%s, detail=%s", replay_mode, status_code, detail)
             if status_code in (401, 403, 429):
                 raise classify_error(status_code, raw_response)
@@ -248,10 +287,12 @@ class StreamingGateway:
                 raise RequestError(status_code, detail)
             raise RequestError(status_code, "")
 
+        if auth_error_detected:
+            raise AuthError(f"认证失败: {raw_response[:200]}")
         if is_auth_error_body(raw_response):
             raise classify_error(status_code, raw_response)
 
         if replay_mode == "http_fallback":
-            logger.info("HTTP 流式回退成功: chunks=%s chars", len(raw_response))
+            logger.info("HTTP 流式回退成功: chunks=%s chars", diagnostic_buffer.total_chars)
         yield ("usage", latest_usage)
         yield ("done", None)
