@@ -210,8 +210,33 @@
       <div id="chat-scroll">
         <template x-if="msgs.length===0">
           <div class="welcome">
+            <div class="welcome-icon">
+              <svg viewBox="0 0 24 24" style="width:48px;height:48px;stroke:currentColor;fill:none;stroke-width:1.5">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+              </svg>
+            </div>
             <h2>今天我能帮您做什么？</h2>
-            <p>发送消息来测试代理服务。</p>
+            <p>选择模型后发送消息来测试 AI Studio 代理服务</p>
+            <div class="welcome-suggestions">
+              <button class="suggestion-chip" @click="draft='解释一下量子计算的基本原理';$refs.ta.focus()">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2">
+                  <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                解释量子计算
+              </button>
+              <button class="suggestion-chip" @click="draft='帮我写一个 Python 快速排序算法';$refs.ta.focus()">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2">
+                  <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                </svg>
+                编写代码
+              </button>
+              <button class="suggestion-chip" @click="draft='总结一下人工智能的发展历史';$refs.ta.focus()">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2">
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                </svg>
+                总结内容
+              </button>
+            </div>
           </div>
         </template>
         <template x-for="(m,i) in msgs" :key="i">
@@ -308,26 +333,56 @@
     <div class="page-wrap" :class="{active:view==='dashboard'}">
       <div class="scroll-area">
         <div class="page-pad">
-          <div class="stat-grid">
-            <div class="stat-card">
-              <div class="slabel">当前激活账号</div>
-              <div class="sval" x-text="activeAccount.email||'暂无'"></div>
+          <div class="dashboard-hero">
+            <div class="hero-title">
+              <h1>控制面板</h1>
+              <p>实时监控您的 AI Studio 代理服务状态</p>
             </div>
-            <div class="stat-card">
-              <div class="slabel">轮询模式</div>
-              <div class="sval" x-text="rotationMode==='round_robin'?'顺序轮询':rotationMode"></div>
+          </div>
+          <div class="bento-grid">
+            <div class="bento-card bento-large">
+              <div class="bento-icon" style="background:linear-gradient(135deg,#667eea,#764ba2)">
+                <svg viewBox="0 0 24 24" style="width:24px;height:24px;stroke:#fff;fill:none;stroke-width:2">
+                  <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                </svg>
+              </div>
+              <div class="bento-label">当前激活账号</div>
+              <div class="bento-value" x-text="activeAccount.email||'暂无激活账号'"></div>
+              <div class="bento-meta" x-text="activeAccount.id?'ID: '+activeAccount.id:''"></div>
             </div>
-            <div class="stat-card">
-              <div class="slabel">总请求数</div>
-              <div class="sval" x-text="totalReqs"></div>
+            <div class="bento-card">
+              <div class="bento-icon" style="background:linear-gradient(135deg,#f093fb,#f5576c)">
+                <svg viewBox="0 0 24 24" style="width:20px;height:20px;stroke:#fff;fill:none;stroke-width:2">
+                  <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                </svg>
+              </div>
+              <div class="bento-label">轮询模式</div>
+              <div class="bento-value" x-text="rotationMode==='round_robin'?'顺序轮询':rotationMode==='lru'?'LRU':rotationMode==='least_rl'?'最小限制':rotationMode"></div>
             </div>
-            <div class="stat-card">
-              <div class="slabel">429 频率限制数</div>
-              <div class="sval sval-amber" x-text="totalRL"></div>
+            <div class="bento-card">
+              <div class="bento-icon" style="background:linear-gradient(135deg,#4facfe,#00f2fe)">
+                <svg viewBox="0 0 24 24" style="width:20px;height:20px;stroke:#fff;fill:none;stroke-width:2">
+                  <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>
+                </svg>
+              </div>
+              <div class="bento-label">总请求数</div>
+              <div class="bento-value" x-text="totalReqs"></div>
+            </div>
+            <div class="bento-card">
+              <div class="bento-icon" style="background:linear-gradient(135deg,#fa709a,#fee140)">
+                <svg viewBox="0 0 24 24" style="width:20px;height:20px;stroke:#fff;fill:none;stroke-width:2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </div>
+              <div class="bento-label">429 限制</div>
+              <div class="bento-value" x-text="totalRL"></div>
             </div>
           </div>
           <div class="card">
-            <div class="card-head">模型统计</div>
+            <div class="card-head">
+              <span>模型统计</span>
+              <span style="font-size:13px;color:var(--muted);font-weight:400" x-text="Object.keys(stats).length+' 个模型'"></span>
+            </div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -343,17 +398,19 @@
                 <tbody>
                   <template x-for="(s,n) in stats" :key="n">
                     <tr>
-                      <td style="font-weight:500" x-text="n.replace('models/','')"></td>
-                      <td x-text="s.requests||0"></td>
+                      <td><div style="font-weight:600;font-size:13px" x-text="n.replace('models/','')"></div></td>
+                      <td><span style="font-weight:500" x-text="s.requests||0"></span></td>
                       <td><span class="badge badge-green" x-text="s.success||0"></span></td>
-                      <td><span class="badge" :class="(s.rate_limited||0)>0?'badge-red':'badge-gray'"
-                          x-text="s.rate_limited||0"></span></td>
-                      <td x-text="s.errors||0"></td>
-                      <td style="font-size:13px;color:var(--muted)" x-text="fmtDate(s.last_used)"></td>
+                      <td><span class="badge" :class="(s.rate_limited||0)>0?'badge-red':'badge-gray'" x-text="s.rate_limited||0"></span></td>
+                      <td><span style="color:var(--muted)" x-text="s.errors||0"></span></td>
+                      <td style="font-size:12px;color:var(--muted)" x-text="fmtDate(s.last_used)"></td>
                     </tr>
                   </template>
                   <tr x-show="!Object.keys(stats).length">
-                    <td colspan="6" style="text-align:center;color:var(--muted);padding:24px">暂无数据</td>
+                    <td colspan="6" style="text-align:center;color:var(--muted);padding:32px">
+                      <div style="font-size:15px;margin-bottom:4px">暂无数据</div>
+                      <div style="font-size:13px">开始使用后将显示模型统计信息</div>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -366,59 +423,92 @@
     <div class="page-wrap" :class="{active:view==='accounts'}">
       <div class="scroll-area">
         <div class="page-pad">
-          <div
-            style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px">
-            <h1 style="font-size:24px;font-weight:700">账号管理</h1>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn" @click="cookieModal.open=true">导入 Cookies</button>
-              <input type="file" x-ref="accountImport" accept="application/json,.json" style="display:none"
-                @change="importAccountFile">
-              <button class="btn" @click="$refs.accountImport.click()">导入账号</button>
-              <button class="btn btn-primary" @click="addAccount()">+ 登录账号</button>
+          <div class="page-header">
+            <div class="page-header-content">
+              <h1>账号管理</h1>
+              <p>管理您的 Google 账号池和轮询策略</p>
             </div>
-          </div>
-          <div class="card" style="margin-bottom:24px" x-show="loginAssist.active" x-cloak>
-            <div class="card-head">远程登录输入</div>
-            <div style="padding:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:end">
-              <div class="modal-field" style="min-width:280px;flex:1">
-                <label>输入到 noVNC 当前焦点框</label>
-                <input class="modal-input" type="password" x-model="loginAssist.text"
-                  @keydown.enter.prevent="pasteLoginText()" placeholder="先点远程浏览器输入框，再在这里粘贴">
-              </div>
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);padding-bottom:11px">
-                <input type="checkbox" x-model="loginAssist.pressEnter"> 输入后回车
-              </label>
-              <button class="btn btn-primary" :disabled="loginAssist.busy||!loginAssist.text" @click="pasteLoginText()">
-                <span x-show="!loginAssist.busy">输入到远程浏览器</span>
-                <span x-show="loginAssist.busy">输入中...</span>
+            <div class="page-header-actions">
+              <button class="btn" @click="cookieModal.open=true">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                导入 Cookies
               </button>
-              <button class="btn" x-show="loginAssist.browserUrl" @click="window.open(loginAssist.browserUrl,'_blank','noopener,noreferrer')">重新打开 noVNC</button>
+              <input type="file" x-ref="accountImport" accept="application/json,.json" style="display:none" @change="importAccountFile">
+              <button class="btn" @click="$refs.accountImport.click()">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                导入账号
+              </button>
+              <button class="btn btn-primary" @click="addAccount()">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2">
+                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                登录账号
+              </button>
             </div>
           </div>
-          <div class="card" style="margin-bottom:24px">
-            <div class="card-head">轮询设置</div>
-            <div style="padding:20px;display:flex;flex-wrap:wrap;gap:16px;align-items:end">
-              <div>
-                <div style="font-size:13px;color:var(--muted);margin-bottom:4px">模式</div>
-                <div class="cselect" :class="{open:openSelect==='rotMode'}" @click.stop>
-                  <div class="cselect-btn" @click="toggleSelect('rotMode',$event)" tabindex="0" style="min-width:130px">
-                    <span
-                      x-text="rotCfg.mode==='round_robin'?'顺序轮询':rotCfg.mode==='lru'?'最近最少使用 (LRU)':rotCfg.mode==='least_rl'?'最小频率限制':'未知'"></span><span
-                      class="arrow"></span></div>
-                  <div class="cselect-menu"><template x-for="v in ['round_robin','lru','least_rl']">
-                      <div class="cselect-opt" :class="{active:rotCfg.mode===v}" @click="rotCfg.mode=v;openSelect=null"
-                        x-text="v==='round_robin'?'顺序轮询':v==='lru'?'最近最少使用 (LRU)':v==='least_rl'?'最小频率限制':v"></div>
-                    </template></div>
+          <div class="feature-card" x-show="loginAssist.active" x-cloak>
+            <div class="feature-card-icon" style="background:linear-gradient(135deg,#667eea,#764ba2)">
+              <svg viewBox="0 0 24 24" style="width:20px;height:20px;stroke:#fff;fill:none;stroke-width:2">
+                <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+            </div>
+            <div class="feature-card-content">
+              <h3>远程登录输入</h3>
+              <p>通过 noVNC 远程控制浏览器进行账号登录</p>
+              <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-top:16px">
+                <div class="modal-field" style="min-width:280px;flex:1">
+                  <label>输入内容</label>
+                  <input class="modal-input" type="password" x-model="loginAssist.text" @keydown.enter.prevent="pasteLoginText()" placeholder="先点击远程浏览器输入框，再在这里粘贴">
+                </div>
+                <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);padding-bottom:11px">
+                  <input type="checkbox" x-model="loginAssist.pressEnter"> 输入后回车
+                </label>
+                <button class="btn btn-primary" :disabled="loginAssist.busy||!loginAssist.text" @click="pasteLoginText()">
+                  <span x-show="!loginAssist.busy">输入到远程浏览器</span>
+                  <span x-show="loginAssist.busy">输入中...</span>
+                </button>
+                <button class="btn" x-show="loginAssist.browserUrl" @click="window.open(loginAssist.browserUrl,'_blank','noopener,noreferrer')">重新打开 noVNC</button>
+              </div>
+            </div>
+          </div>
+          <div class="settings-grid">
+            <div class="settings-card">
+              <div class="settings-card-header">
+                <div class="settings-icon" style="background:linear-gradient(135deg,#4facfe,#00f2fe)">
+                  <svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#fff;fill:none;stroke-width:2">
+                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                </div>
+                <h3>轮询设置</h3>
+              </div>
+              <div class="settings-card-body">
+                <div class="setting-item">
+                  <label>轮询模式</label>
+                  <div class="cselect" :class="{open:openSelect==='rotMode'}" @click.stop>
+                    <div class="cselect-btn" @click="toggleSelect('rotMode',$event)" tabindex="0" style="min-width:180px">
+                      <span x-text="rotCfg.mode==='round_robin'?'顺序轮询':rotCfg.mode==='lru'?'最近最少使用 (LRU)':rotCfg.mode==='least_rl'?'最小频率限制':'未知'"></span>
+                      <span class="arrow"></span>
+                    </div>
+                    <div class="cselect-menu">
+                      <template x-for="v in ['round_robin','lru','least_rl']">
+                        <div class="cselect-opt" :class="{active:rotCfg.mode===v}" @click="rotCfg.mode=v;openSelect=null" x-text="v==='round_robin'?'顺序轮询':v==='lru'?'最近最少使用 (LRU)':v==='least_rl'?'最小频率限制':v"></div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+                <div class="setting-item">
+                  <label>冷却时间 (秒)</label>
+                  <input type="number" x-model.number="rotCfg.cooldown" class="modal-input" style="width:100px" min="0">
                 </div>
               </div>
-              <div>
-                <div style="font-size:13px;color:var(--muted);margin-bottom:4px">冷却时间 (秒)</div><input type="number"
-                  x-model.number="rotCfg.cooldown"
-                  style="width:80px;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:14px"
-                  min="0">
+              <div class="settings-card-footer">
+                <button class="btn" @click="forceNext()">强制切换</button>
+                <button class="btn btn-primary" @click="saveRotation()">保存设置</button>
               </div>
-              <button class="btn" @click="saveRotation()">保存设置</button>
-              <button class="btn" @click="forceNext()">强制切换</button>
             </div>
           </div>
           <div class="card">
@@ -474,32 +564,61 @@
     <div class="page-wrap" :class="{active:view==='settings'}">
       <div class="scroll-area">
         <div class="page-pad">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px">
-            <h1 style="font-size:24px;font-weight:700">设置</h1>
+          <div class="page-header">
+            <div class="page-header-content">
+              <h1>设置</h1>
+              <p>管理 API 密钥和系统配置</p>
+            </div>
           </div>
-          <div class="card">
-            <div class="card-head">当前请求 Key</div>
-            <div style="padding:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:end">
-              <div class="modal-field" style="min-width:280px;flex:1">
-                <label>API Key</label>
-                <input class="modal-input" type="password" x-model="apiKeyInput" placeholder="sk-aistudio-...">
+          <div class="settings-grid">
+            <div class="settings-card">
+              <div class="settings-card-header">
+                <div class="settings-icon" style="background:linear-gradient(135deg,#f093fb,#f5576c)">
+                  <svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#fff;fill:none;stroke-width:2">
+                    <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+                  </svg>
+                </div>
+                <h3>当前请求 Key</h3>
               </div>
-              <button class="btn" @click="saveApiKey()">保存</button>
-              <button class="btn" @click="clearApiKey()">清除</button>
+              <div class="settings-card-body">
+                <div class="setting-item">
+                  <label>API Key</label>
+                  <input class="modal-input" type="password" x-model="apiKeyInput" placeholder="sk-aistudio-...">
+                </div>
+              </div>
+              <div class="settings-card-footer">
+                <button class="btn" @click="clearApiKey()">清除</button>
+                <button class="btn btn-primary" @click="saveApiKey()">保存</button>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div class="settings-card-header">
+                <div class="settings-icon" style="background:linear-gradient(135deg,#4facfe,#00f2fe)">
+                  <svg viewBox="0 0 24 24" style="width:18px;height:18px;stroke:#fff;fill:none;stroke-width:2">
+                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                </div>
+                <h3>创建新 Key</h3>
+              </div>
+              <div class="settings-card-body">
+                <div class="setting-item">
+                  <label>Key 名称</label>
+                  <input class="modal-input" x-model="newKeyName" placeholder="默认 Key">
+                </div>
+                <div class="key-box" x-show="createdKey" style="margin:0">
+                  <div class="key-label">新创建的 Key</div>
+                  <code x-text="createdKey"></code>
+                </div>
+              </div>
+              <div class="settings-card-footer">
+                <button class="btn btn-primary" @click="createApiKey()">创建 Key</button>
+              </div>
             </div>
           </div>
           <div class="card">
-            <div class="card-head">API Key 管理</div>
-            <div style="padding:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:end">
-              <div class="modal-field" style="min-width:220px">
-                <label>Key 名称</label>
-                <input class="modal-input" x-model="newKeyName" placeholder="默认 Key">
-              </div>
-              <button class="btn btn-primary" @click="createApiKey()">创建 Key</button>
-            </div>
-            <div class="key-box" x-show="createdKey">
-              <div class="key-label">新 Key</div>
-              <code x-text="createdKey"></code>
+            <div class="card-head">
+              <span>API Key 列表</span>
+              <span style="font-size:13px;color:var(--muted);font-weight:400" x-text="apiKeys.length+' 个密钥'"></span>
             </div>
             <div class="table-wrap">
               <table>
@@ -515,15 +634,18 @@
                 <tbody>
                   <template x-for="k in apiKeys" :key="k.id">
                     <tr>
-                      <td x-text="k.name"></td>
-                      <td style="font-family:monospace" x-text="k.prefix+'...'"></td>
-                      <td x-text="fmtDate(k.created_at ? k.created_at * 1000 : null)"></td>
-                      <td x-text="fmtDate(k.last_used_at ? k.last_used_at * 1000 : null)"></td>
+                      <td><div style="font-weight:600;font-size:13px" x-text="k.name"></div></td>
+                      <td><code style="font-size:12px;background:rgba(0,0,0,0.05);padding:4px 8px;border-radius:4px" x-text="k.prefix+'...'"></code></td>
+                      <td style="font-size:12px;color:var(--muted)" x-text="fmtDate(k.created_at ? k.created_at * 1000 : null)"></td>
+                      <td style="font-size:12px;color:var(--muted)" x-text="fmtDate(k.last_used_at ? k.last_used_at * 1000 : null)"></td>
                       <td><button class="btn btn-sm btn-danger" @click="deleteApiKey(k.id)">删除</button></td>
                     </tr>
                   </template>
                   <tr x-show="!apiKeys.length">
-                    <td colspan="5" style="text-align:center;color:var(--muted);padding:24px">暂无 API Key</td>
+                    <td colspan="5" style="text-align:center;color:var(--muted);padding:32px">
+                      <div style="font-size:15px;margin-bottom:4px">暂无 API Key</div>
+                      <div style="font-size:13px">创建一个新的 API Key 开始使用</div>
+                    </td>
                   </tr>
                 </tbody>
               </table>
