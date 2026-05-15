@@ -146,6 +146,9 @@ body{
 }
 .login-form{
   padding:32px;
+  display:flex;
+  flex-direction:column;
+  gap:20px;
 }
 .login-footer{
   padding:20px 32px;
@@ -1081,6 +1084,7 @@ select.sel:focus,.sel:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgb
   padding:24px;
   display:flex;
   flex-direction:column;
+  align-items:flex-start;
   gap:12px;
   box-shadow:var(--shadow-sm);
   transition:all .3s cubic-bezier(0.4,0,0.2,1);
