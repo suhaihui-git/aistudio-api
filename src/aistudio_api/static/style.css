@@ -299,6 +299,8 @@ body{
   backdrop-filter:var(--blur);
   -webkit-backdrop-filter:var(--blur);
   gap:16px;
+  position:relative;
+  z-index:1000;
 }
 .topbar-left{display:flex;align-items:center;gap:16px;min-width:0;flex:1}
 .topbar-right{display:flex;align-items:center;gap:10px;flex-shrink:0;position:relative}
