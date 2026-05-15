@@ -162,6 +162,7 @@ python3 main.py client "画一只猫" --image --save cat.png
 | `AISTUDIO_SNAPSHOT_CACHE_TTL` | `3600` | BotGuard snapshot 缓存时间 |
 | `AISTUDIO_ACCOUNT_ROTATION_MODE` | `round_robin` | 轮询模式：`round_robin`、`lru`、`least_rl` |
 | `AISTUDIO_ACCOUNT_COOLDOWN_SECONDS` | `60` | 限流后冷却时间 |
+| `AISTUDIO_SINGLE_ACCOUNT_MAX_CONCURRENCY` | `1` | 单账号最大并发数；大于 1 时启动多个独立浏览器 worker，建议从 2 开始压测 |
 | `AISTUDIO_ACCOUNT_OPERATION_TIMEOUT` | `30` | 账号切换、导入、导出等独占操作等待请求结束的最长时间 |
 | `AISTUDIO_LOGIN_NOVNC_BIND` | `127.0.0.1:6080` | Docker noVNC 暴露地址，公网绑定必须设置 VNC 密码或放在反代鉴权后 |
 | `AISTUDIO_LOGIN_NOVNC_URL` | 空 | 管理后台打开远程登录桌面的 URL |

@@ -25,21 +25,30 @@ _snapshot_cache = SnapshotCache()
 
 
 class AIStudioClient:
-    def __init__(self, port: int = DEFAULT_CAMOUFOX_PORT, use_pure_http: bool = False):
+    def __init__(
+        self,
+        port: int = DEFAULT_CAMOUFOX_PORT,
+        use_pure_http: bool = False,
+        *,
+        snapshot_cache: SnapshotCache | None = None,
+        worker_name: str | None = None,
+    ):
         self.port = port
+        self.worker_name = worker_name or "default"
         self._use_pure_http = use_pure_http
         self._captured: Optional[CapturedRequest] = None
+        self._snapshot_cache = snapshot_cache or _snapshot_cache
         
         if use_pure_http:
             # Pure HTTP mode: no browser needed for capture
             from aistudio_api.infrastructure.gateway.pure_capture import PureHttpCaptureService
-            self._capture_service = PureHttpCaptureService(_snapshot_cache)
+            self._capture_service = PureHttpCaptureService(self._snapshot_cache)
             self._session = None
             self._replay_service = RequestReplayService(session=None)
         else:
             # Browser mode: uses browser for capture and replay
-            self._session = BrowserSession(port=port)
-            self._capture_service = RequestCaptureService(self._session, _snapshot_cache)
+            self._session = BrowserSession(port=port, worker_name=self.worker_name)
+            self._capture_service = RequestCaptureService(self._session, self._snapshot_cache)
             self._replay_service = RequestReplayService(session=self._session)
         
         self._streaming_gateway = StreamingGateway(session=self._session)
@@ -55,9 +64,15 @@ class AIStudioClient:
         if self._session is not None:
             await self._session.switch_auth(auth_file, profile_dir=profile_dir)
 
+    def auth_state_matches(self, auth_file: str | None, profile_dir: str | None = None) -> bool:
+        """Return whether the browser session points at the requested account state."""
+        if self._session is None:
+            return True
+        return self._session.auth_file == auth_file and self._session.profile_dir == profile_dir
+
     def clear_snapshot_cache(self) -> None:
         """清除 snapshot 缓存。"""
-        _snapshot_cache.clear()
+        self._snapshot_cache.clear()
 
     async def reset_auth_state(self) -> None:
         """Clear cached request state and rebuild browser context on next use."""

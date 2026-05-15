@@ -65,6 +65,19 @@ def build_camoufox_proxy(proxy_url: str | None) -> dict[str, str] | None:
     return proxy
 
 
+def _env_int(name: str, default: str | int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _single_account_max_concurrency() -> int:
+    # AISTUDIO_MAX_CONCURRENCY 是旧配置名；新部署优先使用更明确的单账号并发配置。
+    legacy_default = os.getenv("AISTUDIO_MAX_CONCURRENCY", "1")
+    return max(1, _env_int("AISTUDIO_SINGLE_ACCOUNT_MAX_CONCURRENCY", legacy_default))
+
+
 @dataclass(slots=True)
 class Settings:
     port: int = int(os.getenv("AISTUDIO_PORT", "8080"))
@@ -103,7 +116,8 @@ class Settings:
     account_cooldown_seconds: int = int(os.getenv("AISTUDIO_ACCOUNT_COOLDOWN_SECONDS", "60"))
     account_max_retries: int = int(os.getenv("AISTUDIO_ACCOUNT_MAX_RETRIES", "3"))
     account_operation_timeout: float = float(os.getenv("AISTUDIO_ACCOUNT_OPERATION_TIMEOUT", "30"))
-    max_concurrency: int = int(os.getenv("AISTUDIO_MAX_CONCURRENCY", "1"))
+    single_account_max_concurrency: int = _single_account_max_concurrency()
+    max_concurrency: int = single_account_max_concurrency
     # Pure HTTP mode: no browser needed for snapshot generation
     use_pure_http: bool = os.getenv("AISTUDIO_USE_PURE_HTTP", "0") in ("1", "true", "True")
 

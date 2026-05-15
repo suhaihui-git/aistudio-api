@@ -90,6 +90,44 @@ class AccountService:
         logger.info("已加载活跃账号: %s (%s), profile=%s", account.id, account.name, target_profile or "none")
         return account
 
+    async def ensure_active_loaded_for_pool(
+        self,
+        client_pool: Any,
+        *,
+        keep_snapshot_cache: bool = True,
+    ) -> AccountMeta | None:
+        """确保当前活跃账号已经加载到所有 worker。"""
+        account = self._store.get_active_account()
+        if account is None:
+            return None
+        if getattr(client_pool.default_client, "_session", None) is None:
+            return account
+
+        auth_path = self._store.get_auth_path(account.id)
+        if auth_path is None:
+            logger.error("活跃账号 %s 的 auth.json 不存在", account.id)
+            return None
+
+        profile_path = self._store.get_profile_path(account.id)
+        target_auth = str(auth_path.resolve())
+        target_profile = str(profile_path.resolve()) if profile_path is not None else None
+        if client_pool.auth_state_matches(target_auth, profile_dir=target_profile):
+            return account
+
+        self._log_cookie_health(auth_path, account.id)
+        await client_pool.switch_auth(target_auth, profile_dir=target_profile)
+        if not keep_snapshot_cache:
+            client_pool.clear_snapshot_cache()
+            logger.info("已清除 snapshot 缓存")
+        logger.info(
+            "已加载活跃账号到 worker 池: %s (%s), workers=%s, profile=%s",
+            account.id,
+            account.name,
+            client_pool.size,
+            target_profile or "none",
+        )
+        return account
+
     def _log_cookie_health(self, auth_path: Any, account_id: str) -> None:
         """记录账号包是否包含常见 Google 登录 cookie，不输出敏感值。"""
         try:
@@ -182,6 +220,35 @@ class AccountService:
                 return await _do_switch()
         else:
             return await _do_switch()
+
+    async def activate_account_for_pool(
+        self,
+        account_id: str,
+        client_pool: Any,
+        keep_snapshot_cache: bool = False,
+    ) -> AccountMeta | None:
+        """切换所有 worker 到指定账号。"""
+        account = self._store.get_account(account_id)
+        if account is None:
+            return None
+
+        auth_path = self._store.get_auth_path(account_id)
+        if auth_path is None:
+            logger.error("账号 %s 的 auth.json 不存在", account_id)
+            return None
+        profile_path = self._store.get_profile_path(account_id)
+
+        await client_pool.switch_auth(
+            str(auth_path),
+            profile_dir=str(profile_path) if profile_path is not None else None,
+        )
+        if not keep_snapshot_cache:
+            client_pool.clear_snapshot_cache()
+            logger.info("已清除 snapshot 缓存")
+
+        self._store.set_active_account(account_id)
+        logger.info("已切换 worker 池到账号: %s (%s), workers=%s", account_id, account.name, client_pool.size)
+        return account
 
     def delete_account(self, account_id: str) -> bool:
         """删除账号。"""

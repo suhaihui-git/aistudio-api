@@ -10,8 +10,6 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from aistudio_api.infrastructure.gateway.client import AIStudioClient
-
 from .routes_accounts import router as accounts_router
 from .routes_auth import router as auth_router
 from .routes_gemini import router as gemini_router
@@ -33,19 +31,24 @@ async def lifespan(app: FastAPI):
     from aistudio_api.application.account_service import AccountService
     from aistudio_api.application.account_rotator import init_rotator, RotationMode
 
-    client = AIStudioClient(
+    from aistudio_api.config import settings as app_settings
+    from aistudio_api.infrastructure.gateway.client_pool import AIStudioClientPool
+    worker_count = max(1, app_settings.single_account_max_concurrency)
+    client_pool = AIStudioClientPool(
+        size=worker_count,
         port=runtime_state.camoufox_port,
         use_pure_http=settings.use_pure_http,
     )
+    client = client_pool.default_client
+    runtime_state.client_pool = client_pool
     runtime_state.client = client
-    from aistudio_api.config import settings as app_settings
-    runtime_state.max_concurrency = max(1, app_settings.max_concurrency)
+    runtime_state.single_account_max_concurrency = worker_count
+    runtime_state.max_concurrency = worker_count
     runtime_state.busy_lock = asyncio.Semaphore(runtime_state.max_concurrency)
     runtime_state.state_lock = asyncio.Lock()
 
-    # 注入 snapshot 缓存引用，切号时需要清除
-    from aistudio_api.infrastructure.gateway.client import _snapshot_cache
-    runtime_state.snapshot_cache = _snapshot_cache
+    # 注入 snapshot 缓存引用，兼容旧的账号服务调用；实际会清理所有 worker cache。
+    runtime_state.snapshot_cache = client_pool.snapshot_cache
 
     # 初始化账号管理服务
     account_store = AccountStore()
@@ -64,15 +67,15 @@ async def lifespan(app: FastAPI):
     runtime_state.rotator = rotator
 
     if client._session is not None:
-        await account_service.ensure_active_loaded(
-            client._session,
-            runtime_state.snapshot_cache,
+        await account_service.ensure_active_loaded_for_pool(
+            client_pool,
             keep_snapshot_cache=True,
         )
 
     logger.info(
-        "Client initialized (camoufox port=%s, rotation=%s, accounts=%d)",
+        "Client initialized (camoufox port=%s, workers=%d, rotation=%s, accounts=%d)",
         runtime_state.camoufox_port,
+        worker_count,
         rotator.mode,
         len(account_store.list_accounts()),
     )
@@ -82,7 +85,7 @@ async def lifespan(app: FastAPI):
     if not settings.use_pure_http:
         async def _warmup():
             try:
-                await client.warmup()
+                await client_pool.warmup()
             except Exception as e:
                 logger.warning("浏览器预热失败: %s", e)
         warmup_task = asyncio.create_task(_warmup())
@@ -92,6 +95,7 @@ async def lifespan(app: FastAPI):
     if warmup_task and not warmup_task.done():
         warmup_task.cancel()
     runtime_state.client = None
+    runtime_state.client_pool = None
     runtime_state.busy_lock = None
     runtime_state.state_lock = None
     runtime_state.account_service = None

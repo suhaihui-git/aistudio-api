@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import shutil
 import threading
 import time
 import uuid
@@ -26,6 +27,7 @@ log = logging.getLogger("aistudio.session")
 AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat"
 AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
 PROFILE_STORAGE_SEED_MARKER = ".aistudio_storage_seed"
+PROFILE_WORKERS_DIR = ".aistudio_workers"
 GOOGLE_AUTH_COOKIE_NAMES = {
     "SID",
     "HSID",
@@ -161,13 +163,17 @@ FORBIDDEN_BROWSER_HEADERS = {
     "via",
     "priority",
 }
+_AUTH_STATE_WRITE_LOCK = threading.Lock()
 
 
 class BrowserSession:
-    def __init__(self, port: int):
+    def __init__(self, port: int, *, worker_name: str | None = None):
         self.port = port
+        self.worker_name = worker_name or "worker-1"
         self._auth_file = settings.auth_file
         self._profile_dir: str | None = None
+        self._profile_runtime_dir: str | None = None
+        self._owns_profile_runtime_dir = False
         self._hook_page = None
         self._ctx = None
         self._browser = None
@@ -185,6 +191,10 @@ class BrowserSession:
     @property
     def profile_dir(self) -> str | None:
         return self._profile_dir
+
+    @property
+    def profile_runtime_dir(self) -> str | None:
+        return self._profile_runtime_dir
 
     async def ensure_context(self):
         return await self._run_sync(self._ensure_browser_sync)
@@ -500,6 +510,8 @@ class BrowserSession:
         self._close_sync()
         self._auth_file = auth_file
         self._profile_dir = profile_dir
+        self._profile_runtime_dir = None
+        self._owns_profile_runtime_dir = False
         self._templates.clear()
 
     def _reset_context_sync(self) -> None:
@@ -523,18 +535,19 @@ class BrowserSession:
             "proxy": build_camoufox_proxy(settings.proxy_url),
         }
         profile_had_browser_state = False
-        if self._profile_dir:
-            profile_path = Path(self._profile_dir)
+        runtime_profile_dir = self._prepare_runtime_profile_dir_sync()
+        if runtime_profile_dir:
+            profile_path = Path(runtime_profile_dir)
             profile_path.mkdir(parents=True, exist_ok=True)
             profile_had_browser_state = self._profile_has_browser_state(profile_path)
             launch_kwargs["persistent_context"] = True
-            launch_kwargs["user_data_dir"] = self._profile_dir
+            launch_kwargs["user_data_dir"] = runtime_profile_dir
 
         self._cf = Camoufox(
             **launch_kwargs,
         )
         browser_or_context = self._cf.__enter__()
-        if self._profile_dir:
+        if runtime_profile_dir:
             self._browser = None
             self._ctx = browser_or_context
             self._seed_persistent_context_sync(self._ctx, profile_had_browser_state=profile_had_browser_state)
@@ -589,11 +602,79 @@ class BrowserSession:
                 return ctx
         return self._browser.new_context()
 
-    def _seed_persistent_context_sync(self, ctx, *, profile_had_browser_state: bool = False) -> None:
-        if not self._auth_file or not Path(self._auth_file).exists() or not self._profile_dir:
+    def _prepare_runtime_profile_dir_sync(self) -> str | None:
+        if not self._profile_dir:
+            self._profile_runtime_dir = None
+            self._owns_profile_runtime_dir = False
+            return None
+
+        source = Path(self._profile_dir)
+        source.mkdir(parents=True, exist_ok=True)
+        max_workers = max(1, getattr(settings, "single_account_max_concurrency", 1))
+        if max_workers <= 1:
+            self._profile_runtime_dir = str(source)
+            self._owns_profile_runtime_dir = False
+            return self._profile_runtime_dir
+
+        runtime_dir = source.parent / PROFILE_WORKERS_DIR / self.worker_name
+        self._copy_profile_for_worker_sync(source, runtime_dir)
+        self._profile_runtime_dir = str(runtime_dir.resolve())
+        self._owns_profile_runtime_dir = True
+        log.info("worker profile prepared: worker=%s, profile=%s", self.worker_name, self._profile_runtime_dir)
+        return self._profile_runtime_dir
+
+    def _copy_profile_for_worker_sync(self, source: Path, target: Path) -> None:
+        if target.exists():
+            self._remove_profile_dir_sync(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        ignore = shutil.ignore_patterns(
+            ".parentlock",
+            "parent.lock",
+            "lock",
+            "*.lock",
+            "cache2",
+            "startupCache",
+            "shader-cache",
+            "thumbnails",
+            "minidumps",
+            "crashes",
+            PROFILE_WORKERS_DIR,
+        )
+        shutil.copytree(source, target, ignore=ignore)
+
+    def _remove_profile_dir_sync(self, path: Path) -> None:
+        if not path.exists():
             return
-        profile_dir = Path(self._profile_dir)
+
+        def _on_remove_error(func, raw_path, exc_info):
+            try:
+                import os
+                import stat
+
+                os.chmod(raw_path, stat.S_IWRITE)
+                func(raw_path)
+            except Exception:
+                raise exc_info[1]
+
+        shutil.rmtree(path, onerror=_on_remove_error)
+
+    def _seed_persistent_context_sync(self, ctx, *, profile_had_browser_state: bool = False) -> None:
+        runtime_profile_dir = self._profile_runtime_dir or self._profile_dir
+        if not self._auth_file or not Path(self._auth_file).exists() or not runtime_profile_dir:
+            return
+        profile_dir = Path(runtime_profile_dir)
         marker = profile_dir / PROFILE_STORAGE_SEED_MARKER
+        if self._owns_profile_runtime_dir:
+            self._apply_storage_state_sync(ctx, self._auth_file)
+            self._write_storage_seed_marker(
+                marker,
+                {
+                    "auth_file": str(Path(self._auth_file).resolve()),
+                    "reason": "worker_profile_storage_state_seed",
+                },
+            )
+            log.info("worker profile 已使用最新 auth.json 补种子: worker=%s", self.worker_name)
+            return
         if marker.exists() and profile_had_browser_state:
             return
         if marker.exists() and not profile_had_browser_state:
@@ -686,12 +767,15 @@ class BrowserSession:
     def _sync_storage_state_sync(self) -> None:
         if self._ctx is None or not self._auth_file:
             return
+        # 并发 worker 使用 profile 副本，只把 cookies/origins 同步回 auth.json，
+        # 避免多个浏览器进程同时写同一个 Firefox profile。
         try:
             state = self._ctx.storage_state()
-            Path(self._auth_file).write_text(
-                json.dumps(state, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            with _AUTH_STATE_WRITE_LOCK:
+                Path(self._auth_file).write_text(
+                    json.dumps(state, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
             log.debug("storage state synced to %s", self._auth_file)
         except Exception as exc:
             log.debug("storage state sync skipped: %s", exc)
@@ -1308,7 +1392,7 @@ mw:((hash) => {
 
     def _close_sync(self) -> None:
         self._sync_storage_state_sync()
-        if self._ctx is not None and not self._profile_dir:
+        if self._ctx is not None and not self._profile_runtime_dir:
             try:
                 self._ctx.close()
             except Exception:

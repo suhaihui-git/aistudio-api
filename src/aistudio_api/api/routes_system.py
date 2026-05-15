@@ -93,19 +93,27 @@ async def force_next_account(runtime_state=Depends(get_runtime_state), admin=Dep
 
     # 切换账号
     account_service = runtime_state.account_service
+    client_pool = runtime_state.client_pool
     client = runtime_state.client
-    if not all([account_service, client]):
+    if not account_service or (client_pool is None and client is None):
         raise HTTPException(503, detail="服务未就绪")
 
     try:
         async with runtime_state.exclusive_slot():
-            result = await account_service.activate_account(
-                next_account.id,
-                client._session,
-                runtime_state.snapshot_cache,
-                None,
-                keep_snapshot_cache=False,
-            )
+            if client_pool is not None:
+                result = await account_service.activate_account_for_pool(
+                    next_account.id,
+                    client_pool,
+                    keep_snapshot_cache=False,
+                )
+            else:
+                result = await account_service.activate_account(
+                    next_account.id,
+                    client._session,
+                    runtime_state.snapshot_cache,
+                    None,
+                    keep_snapshot_cache=False,
+                )
     except ExclusiveSlotTimeout as exc:
         raise HTTPException(409, detail="当前有请求运行，请稍后重试") from exc
 

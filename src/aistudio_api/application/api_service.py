@@ -80,14 +80,23 @@ async def _try_switch_account(*, exclusive: bool = True) -> bool:
         return False
 
     account_service = runtime_state.account_service
+    client_pool = runtime_state.client_pool
     client = runtime_state.client
     browser_session = client._session if client else None
 
-    if not all([account_service, browser_session]):
+    if not account_service:
         return False
 
     async def _activate():
         # 切换账号时清掉 snapshot，避免复用旧页面态。
+        if client_pool is not None:
+            return await account_service.activate_account_for_pool(
+                next_account.id,
+                client_pool,
+                keep_snapshot_cache=False,
+            )
+        if browser_session is None:
+            return None
         return await account_service.activate_account(
             next_account.id,
             browser_session,
@@ -111,10 +120,23 @@ async def _try_switch_account(*, exclusive: bool = True) -> bool:
 async def _ensure_active_account_loaded() -> bool:
     """确保 BrowserSession 使用当前活跃账号的 auth.json。"""
     account_service = runtime_state.account_service
+    client_pool = runtime_state.client_pool
     client = runtime_state.client
     browser_session = client._session if client else None
 
-    if not all([account_service, browser_session]):
+    if not account_service:
+        return False
+
+    if client_pool is not None:
+        account = await account_service.ensure_active_loaded_for_pool(
+            client_pool,
+            keep_snapshot_cache=True,
+        )
+        if account is not None:
+            return True
+        return await _try_switch_account(exclusive=False)
+
+    if browser_session is None:
         return False
 
     account = await account_service.ensure_active_loaded(
@@ -130,7 +152,21 @@ async def _ensure_active_account_loaded() -> bool:
 
 def health_response() -> dict:
     busy_lock = runtime_state.busy_lock
-    return {"status": "ok", "busy": busy_lock.locked() if busy_lock else False}
+    capacity = max(1, runtime_state.max_concurrency)
+    available = None
+    if busy_lock is not None:
+        available = getattr(busy_lock, "_value", None)
+    active = capacity - available if isinstance(available, int) else None
+    return {
+        "status": "ok",
+        "busy": busy_lock.locked() if busy_lock else False,
+        "concurrency": {
+            "single_account_max": runtime_state.single_account_max_concurrency,
+            "capacity": capacity,
+            "active": active,
+            "available": available,
+        },
+    }
 
 
 def _server_is_busy() -> bool:
@@ -221,23 +257,24 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                         tools=tools,
                     )
 
-                output = await client.generate_content(
-                    model=model,
-                    capture_prompt=normalized["capture_prompt"],
-                    capture_images=normalized["capture_images"] if normalized["capture_images"] else None,
-                    contents=normalized["contents"],
-                    system_instruction_content=(
-                        AistudioContent(role="user", parts=[AistudioPart(text=normalized["system_instruction"])])
-                        if normalized["system_instruction"]
-                        else None
-                    ),
-                    temperature=req.temperature,
-                    top_p=req.top_p,
-                    top_k=req.top_k,
-                    max_tokens=req.max_tokens,
-                    tools=tools,
-                    sanitize_plain_text=True,
-                )
+                async with runtime_state.client_slot() as active_client:
+                    output = await active_client.generate_content(
+                        model=model,
+                        capture_prompt=normalized["capture_prompt"],
+                        capture_images=normalized["capture_images"] if normalized["capture_images"] else None,
+                        contents=normalized["contents"],
+                        system_instruction_content=(
+                            AistudioContent(role="user", parts=[AistudioPart(text=normalized["system_instruction"])])
+                            if normalized["system_instruction"]
+                            else None
+                        ),
+                        temperature=req.temperature,
+                        top_p=req.top_p,
+                        top_k=req.top_k,
+                        max_tokens=req.max_tokens,
+                        tools=tools,
+                        sanitize_plain_text=True,
+                    )
 
                 # 记录成功
                 rotator = runtime_state.rotator
@@ -312,7 +349,13 @@ async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
                 await _ensure_active_account_loaded()
             try:
                 logger.info("Image: model=%s, prompt=%s..., attempt=%d", req.model, req.prompt[:50], attempt + 1)
-                output = await client.generate_image(prompt=req.prompt, model=req.model, size=req.size, google_search=req.google_search)
+                async with runtime_state.client_slot() as active_client:
+                    output = await active_client.generate_image(
+                        prompt=req.prompt,
+                        model=req.model,
+                        size=req.size,
+                        google_search=req.google_search,
+                    )
 
                 data = []
                 for img in output.images:
@@ -390,62 +433,63 @@ def _build_streaming_response(
                 chat_id = new_chat_id()
                 final_usage = None
                 saw_tool_calls = False
-                for stream_attempt in range(2):
-                    try:
-                        events = client.stream_generate_content(
-                            model=model,
-                            capture_prompt=capture_prompt,
-                            capture_images=capture_images,
-                            contents=contents,
-                            system_instruction_content=(
-                                AistudioContent(role="user", parts=[AistudioPart(text=system_instruction)])
-                                if system_instruction
-                                else None
-                            ),
-                            temperature=temperature,
-                            top_p=top_p,
-                            top_k=top_k,
-                            max_tokens=max_tokens,
-                            tools=tools,
-                            force_refresh_capture=stream_attempt > 0,
-                        )
-                        async for event_type, text in _iter_with_stream_heartbeat(
-                            events,
-                            settings.stream_heartbeat_seconds,
-                        ):
-                            if event_type == "heartbeat":
-                                yield mark_yield(": keep-alive\n\n")
-                                continue
-                            if event_type == "body" and text:
-                                yield mark_yield(sse_chunk(chat_id, model, text, include_usage=include_usage))
-                            elif event_type == "thinking" and text:
-                                yield mark_yield(sse_chunk(chat_id, model, "", thinking=text, include_usage=include_usage))
-                            elif event_type == "tool_calls" and text:
-                                saw_tool_calls = True
-                                yield mark_yield(
-                                    sse_chunk(
-                                        chat_id,
-                                        model,
-                                        "",
-                                        tool_calls=to_openai_tool_calls(text if isinstance(text, list) else []),
-                                        include_usage=include_usage,
+                async with runtime_state.client_slot() as active_client:
+                    for stream_attempt in range(2):
+                        try:
+                            events = active_client.stream_generate_content(
+                                model=model,
+                                capture_prompt=capture_prompt,
+                                capture_images=capture_images,
+                                contents=contents,
+                                system_instruction_content=(
+                                    AistudioContent(role="user", parts=[AistudioPart(text=system_instruction)])
+                                    if system_instruction
+                                    else None
+                                ),
+                                temperature=temperature,
+                                top_p=top_p,
+                                top_k=top_k,
+                                max_tokens=max_tokens,
+                                tools=tools,
+                                force_refresh_capture=stream_attempt > 0,
+                            )
+                            async for event_type, text in _iter_with_stream_heartbeat(
+                                events,
+                                settings.stream_heartbeat_seconds,
+                            ):
+                                if event_type == "heartbeat":
+                                    yield mark_yield(": keep-alive\n\n")
+                                    continue
+                                if event_type == "body" and text:
+                                    yield mark_yield(sse_chunk(chat_id, model, text, include_usage=include_usage))
+                                elif event_type == "thinking" and text:
+                                    yield mark_yield(sse_chunk(chat_id, model, "", thinking=text, include_usage=include_usage))
+                                elif event_type == "tool_calls" and text:
+                                    saw_tool_calls = True
+                                    yield mark_yield(
+                                        sse_chunk(
+                                            chat_id,
+                                            model,
+                                            "",
+                                            tool_calls=to_openai_tool_calls(text if isinstance(text, list) else []),
+                                            include_usage=include_usage,
+                                        )
                                     )
-                                )
-                            elif event_type == "usage":
-                                final_usage = text if isinstance(text, dict) else None
-                        break
-                    except RequestError as exc:
-                        if exc.status == 204 and stream_attempt == 0:
-                            logger.warning("Stream 收到 204，清理旧状态后重试一次")
-                            await client.reset_auth_state()
-                            continue
-                        raise
-                    except AuthError as exc:
-                        if stream_attempt == 0:
-                            logger.warning("Stream 鉴权异常，清理旧状态后重试一次: %s", exc)
-                            await client.reset_auth_state()
-                            continue
-                        raise
+                                elif event_type == "usage":
+                                    final_usage = text if isinstance(text, dict) else None
+                            break
+                        except RequestError as exc:
+                            if exc.status == 204 and stream_attempt == 0:
+                                logger.warning("Stream 收到 204，清理旧状态后重试一次")
+                                await active_client.reset_auth_state()
+                                continue
+                            raise
+                        except AuthError as exc:
+                            if stream_attempt == 0:
+                                logger.warning("Stream 鉴权异常，清理旧状态后重试一次: %s", exc)
+                                await active_client.reset_auth_state()
+                                continue
+                            raise
 
                 runtime_state.record(model, "success", final_usage)
                 yield mark_yield(sse_chunk(chat_id, model, "", finish="tool_calls" if saw_tool_calls else "stop", include_usage=include_usage))
@@ -509,20 +553,21 @@ async def handle_gemini_generate_content(
                 if stream:
                     return _build_gemini_streaming_response(client=client, normalized=normalized)
 
-                output = await client.generate_content(
-                    model=normalized["model"],
-                    capture_prompt=normalized["capture_prompt"],
-                    capture_images=normalized["capture_images"],
-                    contents=normalized["contents"],
-                    system_instruction_content=normalized["system_instruction"],
-                    tools=normalized["tools"],
-                    temperature=normalized["temperature"],
-                    top_p=normalized["top_p"],
-                    top_k=normalized["top_k"],
-                    max_tokens=normalized["max_tokens"],
-                    generation_config_overrides=normalized["generation_config_overrides"],
-                    sanitize_plain_text=False,
-                )
+                async with runtime_state.client_slot() as active_client:
+                    output = await active_client.generate_content(
+                        model=normalized["model"],
+                        capture_prompt=normalized["capture_prompt"],
+                        capture_images=normalized["capture_images"],
+                        contents=normalized["contents"],
+                        system_instruction_content=normalized["system_instruction"],
+                        tools=normalized["tools"],
+                        temperature=normalized["temperature"],
+                        top_p=normalized["top_p"],
+                        top_k=normalized["top_k"],
+                        max_tokens=normalized["max_tokens"],
+                        generation_config_overrides=normalized["generation_config_overrides"],
+                        sanitize_plain_text=False,
+                    )
 
                 # 记录成功
                 rotator = runtime_state.rotator
@@ -600,70 +645,71 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
             try:
                 await _ensure_active_account_loaded()
                 final_usage = None
-                for stream_attempt in range(2):
-                    try:
-                        events = client.stream_generate_content(
-                            model=normalized["model"],
-                            capture_prompt=normalized["capture_prompt"],
-                            capture_images=normalized["capture_images"],
-                            contents=normalized["contents"],
-                            system_instruction_content=normalized["system_instruction"],
-                            tools=normalized["tools"],
-                            temperature=normalized["temperature"],
-                            top_p=normalized["top_p"],
-                            top_k=normalized["top_k"],
-                            max_tokens=normalized["max_tokens"],
-                            generation_config_overrides=normalized["generation_config_overrides"],
-                            sanitize_plain_text=False,
-                            force_refresh_capture=stream_attempt > 0,
-                        )
-                        async for event_type, text in _iter_with_stream_heartbeat(
-                            events,
-                            settings.stream_heartbeat_seconds,
-                        ):
-                            if event_type == "heartbeat":
-                                yield ": keep-alive\n\n"
+                async with runtime_state.client_slot() as active_client:
+                    for stream_attempt in range(2):
+                        try:
+                            events = active_client.stream_generate_content(
+                                model=normalized["model"],
+                                capture_prompt=normalized["capture_prompt"],
+                                capture_images=normalized["capture_images"],
+                                contents=normalized["contents"],
+                                system_instruction_content=normalized["system_instruction"],
+                                tools=normalized["tools"],
+                                temperature=normalized["temperature"],
+                                top_p=normalized["top_p"],
+                                top_k=normalized["top_k"],
+                                max_tokens=normalized["max_tokens"],
+                                generation_config_overrides=normalized["generation_config_overrides"],
+                                sanitize_plain_text=False,
+                                force_refresh_capture=stream_attempt > 0,
+                            )
+                            async for event_type, text in _iter_with_stream_heartbeat(
+                                events,
+                                settings.stream_heartbeat_seconds,
+                            ):
+                                if event_type == "heartbeat":
+                                    yield ": keep-alive\n\n"
+                                    continue
+                                if event_type == "body" and text:
+                                    yield gemini_sse(
+                                        {
+                                            "candidates": [
+                                                {
+                                                    "content": {"role": "model", "parts": [{"text": text}]},
+                                                    "finishReason": None,
+                                                }
+                                            ]
+                                        }
+                                    )
+                                elif event_type == "thinking" and text:
+                                    yield gemini_sse(
+                                        {
+                                            "candidates": [
+                                                {
+                                                    "content": {
+                                                        "role": "model",
+                                                        "parts": [{"text": text, "thought": True}],
+                                                    },
+                                                    "finishReason": None,
+                                                }
+                                            ]
+                                        }
+                                    )
+                                elif event_type == "usage":
+                                    final_usage = text if isinstance(text, dict) else None
+                            break
+                        except RequestError as exc:
+                            if exc.status == 204 and stream_attempt == 0:
+                                logger.warning("Gemini stream 收到 204，清理旧状态后重试一次")
+                                await active_client.reset_auth_state()
                                 continue
-                            if event_type == "body" and text:
-                                yield gemini_sse(
-                                    {
-                                        "candidates": [
-                                            {
-                                                "content": {"role": "model", "parts": [{"text": text}]},
-                                                "finishReason": None,
-                                            }
-                                        ]
-                                    }
-                                )
-                            elif event_type == "thinking" and text:
-                                yield gemini_sse(
-                                    {
-                                        "candidates": [
-                                            {
-                                                "content": {
-                                                    "role": "model",
-                                                    "parts": [{"text": text, "thought": True}],
-                                                },
-                                                "finishReason": None,
-                                            }
-                                        ]
-                                    }
-                                )
-                            elif event_type == "usage":
-                                final_usage = text if isinstance(text, dict) else None
-                        break
-                    except RequestError as exc:
-                        if exc.status == 204 and stream_attempt == 0:
-                            logger.warning("Gemini stream 收到 204，清理旧状态后重试一次")
-                            await client.reset_auth_state()
-                            continue
-                        raise
-                    except AuthError as exc:
-                        if stream_attempt == 0:
-                            logger.warning("Gemini stream 鉴权异常，清理旧状态后重试一次: %s", exc)
-                            await client.reset_auth_state()
-                            continue
-                        raise
+                            raise
+                        except AuthError as exc:
+                            if stream_attempt == 0:
+                                logger.warning("Gemini stream 鉴权异常，清理旧状态后重试一次: %s", exc)
+                                await active_client.reset_auth_state()
+                                continue
+                            raise
 
                 runtime_state.record(normalized["model"], "success", final_usage)
                 if final_usage:

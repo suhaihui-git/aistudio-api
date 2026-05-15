@@ -219,16 +219,24 @@ async def activate_account(
 ):
     """切换到指定账号。"""
     # 从 runtime_state 获取 browser_session, snapshot_cache, busy_lock
+    client_pool = runtime_state.client_pool
     browser_session = runtime_state.client._session if runtime_state.client else None
     snapshot_cache = runtime_state.snapshot_cache
-    if browser_session is None:
+    if client_pool is None and browser_session is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
     try:
         async with runtime_state.exclusive_slot():
-            account = await account_service.activate_account(
-                account_id, browser_session, snapshot_cache, None
-            )
+            if client_pool is not None:
+                account = await account_service.activate_account_for_pool(
+                    account_id,
+                    client_pool,
+                    keep_snapshot_cache=False,
+                )
+            else:
+                account = await account_service.activate_account(
+                    account_id, browser_session, snapshot_cache, None
+                )
     except ExclusiveSlotTimeout as exc:
         raise _account_busy_error() from exc
     if account is None:
@@ -252,9 +260,13 @@ async def export_account(
     try:
         async with runtime_state.exclusive_slot():
             active = account_service.get_active_account()
-            client = runtime_state.client
-            if active and active.id == account_id and client is not None:
-                await client.sync_storage_state()
+            if active and active.id == account_id:
+                client_pool = runtime_state.client_pool
+                client = runtime_state.client
+                if client_pool is not None:
+                    await client_pool.sync_storage_state()
+                elif client is not None:
+                    await client.sync_storage_state()
             payload = account_service.export_account(account_id)
     except ExclusiveSlotTimeout as exc:
         raise _account_busy_error() from exc
@@ -277,11 +289,15 @@ async def delete_account(
     """删除账号。"""
     async def _delete():
         active = account_service.get_active_account()
+        client_pool = runtime_state.client_pool
         client = runtime_state.client
-        if active and active.id == account_id and client and client._session:
-            await client._session.switch_auth(None)
-            if runtime_state.snapshot_cache is not None:
-                runtime_state.snapshot_cache.clear()
+        if active and active.id == account_id:
+            if client_pool is not None:
+                await client_pool.switch_auth(None)
+            elif client and client._session:
+                await client._session.switch_auth(None)
+                if runtime_state.snapshot_cache is not None:
+                    runtime_state.snapshot_cache.clear()
 
         success = account_service.delete_account(account_id)
         if not success:
@@ -437,7 +453,10 @@ async def _detach_active_account_if_overwriting(
     if active is None or active.id != account_id:
         return
     client = runtime_state.client
-    if client and client._session:
+    client_pool = runtime_state.client_pool
+    if client_pool is not None:
+        await client_pool.switch_auth(None)
+    elif client and client._session:
         await client._session.switch_auth(None)
     if runtime_state.snapshot_cache is not None:
         runtime_state.snapshot_cache.clear()

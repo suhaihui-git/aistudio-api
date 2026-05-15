@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from aistudio_api.config import settings
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.infrastructure.gateway.client_pool import AIStudioClientPool
 
 
 class ExclusiveSlotTimeout(RuntimeError):
@@ -21,9 +22,11 @@ class ExclusiveSlotTimeout(RuntimeError):
 @dataclass
 class RuntimeState:
     client: AIStudioClient | None = None
+    client_pool: AIStudioClientPool | None = None
     busy_lock: asyncio.Semaphore | None = None
     state_lock: asyncio.Lock | None = None
     max_concurrency: int = 1
+    single_account_max_concurrency: int = 1
     camoufox_port: int = 9222
     snapshot_cache: object | None = None  # SnapshotCache 实例
     account_service: object | None = None  # AccountService 实例
@@ -71,6 +74,17 @@ class RuntimeState:
             yield
         finally:
             self.busy_lock.release()
+
+    @asynccontextmanager
+    async def client_slot(self) -> AsyncIterator[AIStudioClient]:
+        if self.client_pool is None:
+            if self.client is None:
+                raise RuntimeError("Client not initialized")
+            yield self.client
+            return
+
+        async with self.client_pool.acquire() as worker:
+            yield worker.client
 
     @asynccontextmanager
     async def exclusive_slot(self, timeout_seconds: float | None = None) -> AsyncIterator[None]:

@@ -200,6 +200,49 @@ AISTUDIO_LOGIN_VNC_PASSWORD=一个强密码
 
 输入注意：noVNC 原生粘贴受浏览器剪贴板权限限制。容器内会启动 `autocutsel` 同步 X11 剪贴板；如果仍无法粘贴，账号管理页会在登录会话期间显示“远程登录输入”。先点击 noVNC 里的目标输入框，再在管理页粘贴文本并发送，后端会通过 Playwright 直接写入当前焦点输入框。
 
+### 2.3 浏览器登录账号的注意事项
+
+通过 `/accounts/login/start` 登录成功后，后端会保存两类状态：
+
+- `auth.json`：Playwright storage state，包含 Google Cookie 和 localStorage
+- `profile/`：Camoufox/Firefox 持久化浏览器 Profile，包含登录过程中浏览器写入的本地状态
+
+线上部署必须持久化账号目录。Docker 场景至少要持久化 `/app/data`，否则重启后 `auth.json`、`profile/` 和账号注册表会丢失，表现为管理页仍能打开但请求 Google AI Studio 时认证失败。
+
+账号登录成功只表示远程登录浏览器已经进入 AI Studio 页面；真正调用生成接口时，还需要主请求浏览器用该账号重新打开 AI Studio，并生成本次请求需要的 Google Web 认证头。当前实现会在主请求浏览器启动时输出不含敏感值的检查日志：
+
+```text
+主请求浏览器 cookie 检查: cookies=31, google_cookies=20, auth_cookies=['APISID', 'HSID', 'SAPISID', ...]
+```
+
+如果 `auth_cookies=[]`，说明账号登录态没有被主请求浏览器加载成功，优先检查账号目录是否持久化、是否刚覆盖导入过账号、`profile/` 是否被清空，以及是否需要重新登录。
+
+如果 `auth_cookies` 中包含 `SAPISID`、`APISID`、`__Secure-*PAPISID` 等核心 Cookie，但仍出现：
+
+```text
+CREDENTIALS_MISSING
+```
+
+通常不是外部 `sk-aistudio-*` API Key 的问题，而是请求 Google RPC 时的 Web 认证头无效。流式请求会优先走浏览器内 XHR；如果浏览器返回 `network error`，会进入 HTTP fallback。fallback 不能复用抓包时的旧 `authorization`，需要根据当前 Cookie 重新生成 `SAPISIDHASH`、`SAPISID1PHASH`、`SAPISID3PHASH`，并去掉重复的 `Origin/origin`、`Referer/referer` 头。正常日志应类似：
+
+```text
+HTTP 流式回退请求: ..., target_cookies=0, auth=['SAPISIDHASH', 'SAPISID1PHASH', 'SAPISID3PHASH']
+```
+
+这里 `target_cookies=0` 不一定异常，因为请求目标是 `alkalimakersuite-pa.clients6.google.com`，浏览器不会把 `.google.com` Cookie 直接发给这个域名；真正关键是 `auth=[...]` 是否能生成。如果 `auth=[]`，说明当前账号 Cookie 中缺少可用于生成 Google Web 认证头的 `SAPISID` 或 `__Secure-*PAPISID`。
+
+账号切换、删除、导入、导出会独占浏览器状态。默认单账号只启动 1 个浏览器 worker：
+
+```text
+AISTUDIO_SINGLE_ACCOUNT_MAX_CONCURRENCY=1
+```
+
+如果需要单账号并发，可以把 `AISTUDIO_SINGLE_ACCOUNT_MAX_CONCURRENCY` 调大。服务会为每个并发槽启动独立的 browser worker，每个 worker 有自己的 AI Studio 页面、Hook 模板、snapshot 缓存和请求流状态；请求从开始到流式结束都会独占其中一个 worker。
+
+浏览器登录账号会保存持久化 `profile/`。当单账号并发数大于 1 时，worker 不会同时打开同一个 Firefox profile，而是从账号 profile 复制出运行时副本，并用当前 `auth.json` 补种子。这样可以避免 profile 文件锁冲突，同时保证 HTTP fallback 能用最新 Cookie 生成 Google Web 认证头。
+
+建议从 2 开始压测。并发过高仍可能触发 AI Studio/Google 账号侧风控，出现 `429`、`network error` 或 `CREDENTIALS_MISSING`。多账号轮询只负责失败/限流后的账号切换，不代表同一个账号可以无限并发。
+
 ## 3. OpenAI 兼容请求格式
 
 入口：
