@@ -897,6 +897,7 @@ select.sel:focus,.sel:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgb
   align-items:center;
   justify-content:center;
   box-shadow:0 2px 8px rgba(0,0,0,0.12);
+  flex-shrink:0;
 }
 .settings-card-header h3{font-size:16px;font-weight:600;letter-spacing:-0.01em}
 .settings-card-body{padding:24px;display:flex;flex-direction:column;gap:20px}
@@ -969,6 +970,7 @@ select.sel:focus,.sel:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgb
   align-items:center;
   justify-content:center;
   box-shadow:0 4px 12px rgba(0,0,0,0.15);
+  flex-shrink:0;
 }
 .bento-label{
   font-size:13px;
