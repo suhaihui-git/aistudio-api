@@ -73,10 +73,16 @@ class AIStudioClient:
         if self._session is not None:
             await self._session.close(sync_storage=sync_storage)
 
-    async def switch_auth(self, auth_file: str | None, profile_dir: str | None = None) -> None:
+    async def switch_auth(
+        self,
+        auth_file: str | None,
+        profile_dir: str | None = None,
+        *,
+        sync_storage: bool = True,
+    ) -> None:
         """切换账号的 auth 文件。"""
         if self._session is not None:
-            await self._session.switch_auth(auth_file, profile_dir=profile_dir)
+            await self._session.switch_auth(auth_file, profile_dir=profile_dir, sync_storage=sync_storage)
 
     def auth_state_matches(self, auth_file: str | None, profile_dir: str | None = None) -> bool:
         """Return whether the browser session points at the requested account state."""
@@ -88,14 +94,14 @@ class AIStudioClient:
         """清除 snapshot 缓存。"""
         self._snapshot_cache.clear()
 
-    async def reset_auth_state(self) -> None:
+    async def reset_auth_state(self, *, sync_storage: bool = True) -> None:
         """Clear cached request state and rebuild browser context on next use."""
         self.clear_snapshot_cache()
         clear_templates = getattr(self._capture_service, "clear_templates", None)
         if clear_templates is not None:
             clear_templates()
         if self._session is not None:
-            await self._session.reset_context()
+            await self._session.reset_context(sync_storage=sync_storage)
 
     async def sync_storage_state(self) -> None:
         """Persist the current browser storage state to the active auth file."""

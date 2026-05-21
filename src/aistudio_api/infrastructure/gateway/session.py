@@ -206,11 +206,17 @@ class BrowserSession:
     async def get_cookies(self) -> list[dict[str, Any]]:
         return await self._run_sync(self._get_cookies_sync)
 
-    async def switch_auth(self, auth_file: str | None, profile_dir: str | None = None) -> None:
-        await self._run_sync(self._switch_auth_sync, auth_file, profile_dir)
+    async def switch_auth(
+        self,
+        auth_file: str | None,
+        profile_dir: str | None = None,
+        *,
+        sync_storage: bool = True,
+    ) -> None:
+        await self._run_sync(self._switch_auth_sync, auth_file, profile_dir, sync_storage)
 
-    async def reset_context(self) -> None:
-        await self._run_sync(self._reset_context_sync)
+    async def reset_context(self, *, sync_storage: bool = True) -> None:
+        await self._run_sync(self._reset_context_sync, sync_storage)
 
     async def sync_storage_state(self) -> None:
         await self._run_sync(self._sync_storage_state_sync)
@@ -525,21 +531,26 @@ class BrowserSession:
         url, headers = self._get_captured_info()
         return page, url, headers
 
-    def _switch_auth_sync(self, auth_file: str | None, profile_dir: str | None = None) -> None:
+    def _switch_auth_sync(
+        self,
+        auth_file: str | None,
+        profile_dir: str | None = None,
+        sync_storage: bool = True,
+    ) -> None:
         auth_file = str(Path(auth_file).resolve()) if auth_file else None
         profile_dir = str(Path(profile_dir).resolve()) if profile_dir else None
         if self._auth_file == auth_file and self._profile_dir == profile_dir:
             return
-        self._close_sync()
+        self._close_sync(sync_storage=sync_storage)
         self._auth_file = auth_file
         self._profile_dir = profile_dir
         self._profile_runtime_dir = None
         self._owns_profile_runtime_dir = False
         self._templates.clear()
 
-    def _reset_context_sync(self) -> None:
+    def _reset_context_sync(self, sync_storage: bool = True) -> None:
         self._templates.clear()
-        self._close_sync()
+        self._close_sync(sync_storage=sync_storage)
 
     def _ensure_browser_sync(self):
         if self._ctx is not None and self._hook_page is not None and not self._hook_page.is_closed():

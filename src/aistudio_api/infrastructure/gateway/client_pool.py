@@ -48,6 +48,7 @@ class AIStudioClientPool:
         self._available: deque[AIStudioWorker] = deque(self.workers)
         self._condition = asyncio.Condition()
         self._lifecycle_lock = asyncio.Lock()
+        self._account_switch_pending = False
         self._maintenance_task: asyncio.Task | None = None
 
     @property
@@ -96,6 +97,8 @@ class AIStudioClientPool:
         if limit <= 0:
             return
         async with self._lifecycle_lock:
+            if self._account_switch_pending:
+                return
             selected: list[AIStudioWorker] = []
             async with self._condition:
                 for worker in list(self._available):
@@ -118,21 +121,52 @@ class AIStudioClientPool:
                         self._available.append(worker)
                         self._condition.notify()
 
+    def _storage_sync_worker_id(self) -> int | None:
+        open_workers = [
+            worker
+            for worker in self.workers
+            if worker.client.browser_open
+        ]
+        if not open_workers:
+            return None
+        return max(open_workers, key=lambda worker: worker.last_used).id
+
     async def switch_auth(self, auth_file: str | None, profile_dir: str | None = None) -> None:
-        async with self._lifecycle_lock:
-            await asyncio.gather(
-                *(worker.client.switch_auth(auth_file, profile_dir=profile_dir) for worker in self.workers),
-            )
-            self.clear_snapshot_cache()
+        self._account_switch_pending = True
+        try:
+            async with self._lifecycle_lock:
+                sync_worker_id = self._storage_sync_worker_id()
+                await asyncio.gather(
+                    *(
+                        worker.client.switch_auth(
+                            auth_file,
+                            profile_dir=profile_dir,
+                            sync_storage=(worker.id == sync_worker_id),
+                        )
+                        for worker in self.workers
+                    ),
+                )
+                self.clear_snapshot_cache()
+        finally:
+            self._account_switch_pending = False
 
     async def reset_auth_state(self) -> None:
         async with self._lifecycle_lock:
+            sync_worker_id = self._storage_sync_worker_id()
             await asyncio.gather(
-                *(worker.client.reset_auth_state() for worker in self.workers),
+                *(
+                    worker.client.reset_auth_state(sync_storage=(worker.id == sync_worker_id))
+                    for worker in self.workers
+                ),
             )
 
     async def sync_storage_state(self) -> None:
-        await self.default_client.sync_storage_state()
+        worker = max(
+            (worker for worker in self.workers if worker.client.browser_open),
+            key=lambda worker: worker.last_used,
+            default=self.workers[0],
+        )
+        await worker.client.sync_storage_state()
 
     def clear_snapshot_cache(self) -> None:
         for worker in self.workers:
@@ -181,6 +215,8 @@ class AIStudioClientPool:
         now = time.monotonic()
         candidates: list[AIStudioWorker] = []
         async with self._lifecycle_lock:
+            if self._account_switch_pending:
+                return
             async with self._condition:
                 for worker in list(self._available):
                     if now - worker.last_used < idle_seconds:
