@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from aistudio_api.config import DEFAULT_IMAGE_MODEL, DEFAULT_TEXT_MODEL
 
@@ -39,8 +39,15 @@ class ChatRequest(BaseModel):
     top_p: Optional[float] = None
     top_k: Optional[int] = None
     max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
     tools: Optional[list[OpenAITool]] = None
     stream_options: "StreamOptions | None" = None
+
+    @model_validator(mode="after")
+    def normalize_max_tokens(self):
+        if self.max_tokens is None and self.max_completion_tokens is not None:
+            self.max_tokens = self.max_completion_tokens
+        return self
 
 
 class StreamOptions(BaseModel):

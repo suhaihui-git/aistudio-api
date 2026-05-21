@@ -19,7 +19,9 @@ from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent, AistudioPart
 from aistudio_api.api.responses import (
     chat_completion_response,
+    gemini_finish_reason,
     new_chat_id,
+    openai_finish_reason,
     sse_chunk,
     sse_error,
     sse_usage_chunk,
@@ -231,6 +233,8 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                     req.stream,
                     attempt + 1,
                 )
+                if req.max_tokens is not None:
+                    logger.info("Chat generation config: max_tokens=%s", req.max_tokens)
                 tools = normalize_openai_tools(req.tools)
 
                 # Gemma 4 默认开启 Google Search
@@ -433,6 +437,7 @@ def _build_streaming_response(
                 await _ensure_active_account_loaded()
                 chat_id = new_chat_id()
                 final_usage = None
+                finish_info: dict | None = None
                 saw_tool_calls = False
                 async with runtime_state.client_slot() as active_client:
                     for stream_attempt in range(2):
@@ -478,6 +483,8 @@ def _build_streaming_response(
                                     )
                                 elif event_type == "usage":
                                     final_usage = text if isinstance(text, dict) else None
+                                elif event_type == "finish":
+                                    finish_info = text if isinstance(text, dict) else None
                             break
                         except RequestError as exc:
                             if exc.status == 204 and stream_attempt == 0:
@@ -493,7 +500,11 @@ def _build_streaming_response(
                             raise
 
                 runtime_state.record(model, "success", final_usage)
-                yield mark_yield(sse_chunk(chat_id, model, "", finish="tool_calls" if saw_tool_calls else "stop", include_usage=include_usage))
+                finish_reason = openai_finish_reason(
+                    finish_info.get("reason") if finish_info else None,
+                    saw_tool_calls=saw_tool_calls,
+                )
+                yield mark_yield(sse_chunk(chat_id, model, "", finish=finish_reason, include_usage=include_usage))
                 if include_usage:
                     yield mark_yield(sse_usage_chunk(chat_id, model, final_usage))
                 yield mark_yield("data: [DONE]\n\n")
@@ -501,6 +512,10 @@ def _build_streaming_response(
                 logger.error("Stream error: %s", exc, exc_info=True)
                 runtime_state.record(model, "errors")
                 yield mark_yield(sse_error(str(exc)))
+            except asyncio.CancelledError:
+                logger.warning("Stream client disconnected before completion: model=%s", model)
+                runtime_state.record(model, "errors")
+                raise
             finally:
                 cleanup_files(cleanup_paths)
 
@@ -646,6 +661,7 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
             try:
                 await _ensure_active_account_loaded()
                 final_usage = None
+                finish_info: dict | None = None
                 async with runtime_state.client_slot() as active_client:
                     for stream_attempt in range(2):
                         try:
@@ -698,6 +714,8 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                                     )
                                 elif event_type == "usage":
                                     final_usage = text if isinstance(text, dict) else None
+                                elif event_type == "finish":
+                                    finish_info = text if isinstance(text, dict) else None
                             break
                         except RequestError as exc:
                             if exc.status == 204 and stream_attempt == 0:
@@ -720,11 +738,27 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                             "usageMetadata": to_gemini_usage_metadata(final_usage),
                         }
                     )
+                yield gemini_sse(
+                    {
+                        "candidates": [
+                            {
+                                "content": {"role": "model", "parts": []},
+                                "finishReason": gemini_finish_reason(
+                                    finish_info.get("reason") if finish_info else None
+                                ),
+                            }
+                        ]
+                    }
+                )
                 yield gemini_sse("[DONE]")
             except Exception as exc:
                 logger.error("Gemini stream error: %s", exc, exc_info=True)
                 runtime_state.record(normalized["model"], "errors")
                 yield gemini_sse({"error": {"message": str(exc)}})
+            except asyncio.CancelledError:
+                logger.warning("Gemini stream client disconnected before completion: model=%s", normalized["model"])
+                runtime_state.record(normalized["model"], "errors")
+                raise
             finally:
                 cleanup_files(normalized["cleanup_paths"])
 

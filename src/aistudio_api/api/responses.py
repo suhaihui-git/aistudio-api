@@ -37,6 +37,40 @@ def to_gemini_usage_metadata(usage: dict | None = None) -> dict:
     }
 
 
+def openai_finish_reason(aistudio_reason: int | None, *, saw_tool_calls: bool = False) -> str:
+    if saw_tool_calls:
+        return "tool_calls"
+    if aistudio_reason == 2:
+        return "length"
+    if aistudio_reason in (3, 4, 6, 7, 8, 10):
+        return "content_filter"
+    return "stop"
+
+
+def gemini_finish_reason(aistudio_reason: int | None, *, saw_tool_calls: bool = False) -> str:
+    if saw_tool_calls:
+        return "FUNCTION_CALL"
+    if aistudio_reason == 2:
+        return "MAX_TOKENS"
+    if aistudio_reason == 3:
+        return "SAFETY"
+    if aistudio_reason == 4:
+        return "RECITATION"
+    if aistudio_reason == 5:
+        return "OTHER"
+    if aistudio_reason == 6:
+        return "BLOCKLIST"
+    if aistudio_reason == 7:
+        return "PROHIBITED_CONTENT"
+    if aistudio_reason == 8:
+        return "SPII"
+    if aistudio_reason == 9:
+        return "MALFORMED_FUNCTION_CALL"
+    if aistudio_reason == 10:
+        return "IMAGE_SAFETY"
+    return "STOP"
+
+
 def sse_chunk(
     chat_id: str,
     model: str,

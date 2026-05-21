@@ -11,7 +11,7 @@ from pathlib import Path
 
 from aistudio_api.config import settings
 from aistudio_api.domain.errors import AuthError, RequestError, classify_error, is_auth_error_body
-from aistudio_api.domain.models import parse_chunk_usage
+from aistudio_api.domain.models import parse_chunk_usage, parse_response_chunk
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest
 from aistudio_api.infrastructure.gateway.google_auth import (
     GOOGLE_AUTH_ORIGIN,
@@ -22,7 +22,7 @@ from aistudio_api.infrastructure.gateway.google_auth import (
 )
 from aistudio_api.infrastructure.gateway.request_rewriter import modify_body
 from aistudio_api.infrastructure.gateway.session import BrowserSession
-from aistudio_api.infrastructure.gateway.stream_parser import IncrementalJSONStreamParser, classify_chunk
+from aistudio_api.infrastructure.gateway.stream_parser import IncrementalJSONStreamParser
 from aistudio_api.infrastructure.gateway.timeouts import completion_timeout_seconds
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
 
@@ -210,6 +210,18 @@ class StreamingGateway:
             generation_config_overrides=generation_config_overrides,
             sanitize_plain_text=sanitize_plain_text,
         )
+        try:
+            wire_body = json.loads(modified_body)
+            generation_config = wire_body[3] if len(wire_body) > 3 and isinstance(wire_body[3], list) else []
+            logger.info(
+                "流式请求配置: model=%s, requested_max_tokens=%s, wire_max_tokens=%s, timeout=%ss",
+                model,
+                max_tokens,
+                generation_config[3] if len(generation_config) > 3 else None,
+                completion_timeout_seconds(max_tokens=max_tokens, base_seconds=settings.timeout_stream),
+            )
+        except Exception as exc:
+            logger.debug("流式请求配置日志失败: %s", exc)
 
         parser = IncrementalJSONStreamParser()
         latest_usage: dict | None = None
@@ -219,9 +231,11 @@ class StreamingGateway:
         status_code = 0
         replay_mode = "browser"
         timeout_seconds = completion_timeout_seconds(max_tokens=max_tokens, base_seconds=settings.timeout_stream)
+        latest_finish_reason: int | None = None
+        latest_finish_message = ""
 
         async def consume_events(events):
-            nonlocal auth_error_detected, latest_usage, status_code
+            nonlocal auth_error_detected, latest_finish_message, latest_finish_reason, latest_usage, status_code
             async for event_type, payload in events:
                 if event_type == "status" and payload and not status_code:
                     status_code = int(payload)
@@ -236,9 +250,16 @@ class StreamingGateway:
                         usage = parse_chunk_usage(parsed_chunk)
                         if usage:
                             latest_usage = usage
-                        ctype, text = classify_chunk(parsed_chunk)
-                        if ctype in ("body", "thinking", "tool_calls") and text:
-                            yield (ctype, text)
+                        candidate = parse_response_chunk(parsed_chunk)
+                        if candidate.finish_reason is not None:
+                            latest_finish_reason = candidate.finish_reason
+                            latest_finish_message = candidate.finish_message
+                        if candidate.thinking:
+                            yield ("thinking", candidate.thinking)
+                        if candidate.function_calls:
+                            yield ("tool_calls", candidate.function_calls)
+                        if candidate.text:
+                            yield ("body", candidate.text)
 
         try:
             async for event in consume_events(
@@ -259,6 +280,8 @@ class StreamingGateway:
             auth_error_detected = False
             status_code = 0
             replay_mode = "http_fallback"
+            latest_finish_reason = None
+            latest_finish_message = ""
             async for event in consume_events(
                 self._stream_via_http(
                     captured=captured,
@@ -294,5 +317,15 @@ class StreamingGateway:
 
         if replay_mode == "http_fallback":
             logger.info("HTTP 流式回退成功: chunks=%s chars", diagnostic_buffer.total_chars)
+        logger.info(
+            "流式请求结束: mode=%s, status=%s, finish_reason=%s, finish_message=%s, chars=%s, usage=%s",
+            replay_mode,
+            status_code,
+            latest_finish_reason,
+            latest_finish_message,
+            diagnostic_buffer.total_chars,
+            latest_usage,
+        )
+        yield ("finish", {"reason": latest_finish_reason, "message": latest_finish_message})
         yield ("usage", latest_usage)
         yield ("done", None)
