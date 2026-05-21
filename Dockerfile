@@ -54,18 +54,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create app directory
 WORKDIR /app
 
-# Install Camoufox browser before Python app dependencies so requirements.txt
-# changes do not invalidate the large browser download layer.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install camoufox && \
-    python -m camoufox fetch
-
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
+# Install pinned Python dependencies and fetch the Camoufox browser. Keeping
+# Camoufox and Playwright pinned avoids runtime drift in the browser driver.
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
+    pip install -r requirements.txt && \
+    python -m camoufox fetch
 
 # Copy application code
 COPY src/ src/
