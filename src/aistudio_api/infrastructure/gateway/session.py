@@ -1220,10 +1220,11 @@ mw:((hash) => {
         for url in (AI_STUDIO_URL, AI_STUDIO_URL_FALLBACK):
             try:
                 _t0 = _t.time()
-                page.goto(url, wait_until="networkidle", timeout=30000)
+                page.goto(url, wait_until="domcontentloaded", timeout=settings.timeout_page_load * 1000)
                 log.debug(f"[timing] goto {url} took {_t.time()-_t0:.1f}s")
                 # Wait for SPA framework and chat UI to render
-                for _ in range(60):
+                ui_timeout = max(30, settings.timeout_page_load)
+                for _ in range(ui_timeout):
                     page.wait_for_timeout(1000)
                     has_dms = page.evaluate("mw:!!window.default_MakerSuite")
                     has_textarea = page.query_selector("textarea") is not None

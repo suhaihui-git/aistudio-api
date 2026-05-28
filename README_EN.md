@@ -158,6 +158,7 @@ Environment variables or `.env` file:
 | `AISTUDIO_CAMOUFOX_HEADLESS` | `1` | Run browser headless |
 | `AISTUDIO_TIMEOUT_REPLAY` | `120` | Request timeout (seconds) |
 | `AISTUDIO_TIMEOUT_STREAM` | `120` | Stream timeout (seconds) |
+| `AISTUDIO_TIMEOUT_PAGE_LOAD` | `90` | AI Studio page load and UI readiness timeout (seconds) |
 | `AISTUDIO_SNAPSHOT_CACHE_TTL` | `3600` | BotGuard snapshot cache TTL |
 | `AISTUDIO_ACCOUNT_ROTATION_MODE` | `round_robin` | `round_robin`, `lru`, or `least_rl` |
 | `AISTUDIO_ACCOUNT_COOLDOWN_SECONDS` | `60` | Cooldown after rate limit |

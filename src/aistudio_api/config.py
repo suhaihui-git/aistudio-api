@@ -94,6 +94,7 @@ class Settings:
     timeout_replay: int = int(os.getenv("AISTUDIO_TIMEOUT_REPLAY", "120"))
     timeout_stream: int = int(os.getenv("AISTUDIO_TIMEOUT_STREAM", "120"))
     timeout_capture: int = int(os.getenv("AISTUDIO_TIMEOUT_CAPTURE", "30"))
+    timeout_page_load: int = int(os.getenv("AISTUDIO_TIMEOUT_PAGE_LOAD", "90"))
     stream_heartbeat_seconds: int = int(os.getenv("AISTUDIO_STREAM_HEARTBEAT_SECONDS", "15"))
     stream_diagnostic_buffer_chars: int = max(1024, _env_int("AISTUDIO_STREAM_DIAGNOSTIC_BUFFER_CHARS", "65536"))
     snapshot_cache_ttl: int = int(os.getenv("AISTUDIO_SNAPSHOT_CACHE_TTL", "3600"))

@@ -159,6 +159,7 @@ python3 main.py client "画一只猫" --image --save cat.png
 | `AISTUDIO_CAMOUFOX_HEADLESS` | `1` | 无头模式运行浏览器 |
 | `AISTUDIO_TIMEOUT_REPLAY` | `120` | 请求超时（秒） |
 | `AISTUDIO_TIMEOUT_STREAM` | `120` | 流式超时（秒） |
+| `AISTUDIO_TIMEOUT_PAGE_LOAD` | `90` | AI Studio 页面加载与 UI 就绪等待超时（秒） |
 | `AISTUDIO_SNAPSHOT_CACHE_TTL` | `3600` | BotGuard snapshot 缓存时间 |
 | `AISTUDIO_ACCOUNT_ROTATION_MODE` | `round_robin` | 轮询模式：`round_robin`、`lru`、`least_rl` |
 | `AISTUDIO_ACCOUNT_COOLDOWN_SECONDS` | `60` | 限流后冷却时间 |
